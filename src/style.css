@@ -1,0 +1,379 @@
+:root {
+  --background: #161715;
+  --surface: #1f211d;
+  --surface-alt: #2a2c26;
+  --text: #e8e1cc;
+  --text-muted: #b9b197;
+  --accent: #c99b45;
+  --accent-hover: #e2bb6f;
+  --border: #5b5f53;
+  --code-bg: #151613;
+  --node-valid: #3e9a61;
+  --node-tampered: #af3c47;
+  --node-proof: #ca9442;
+  --node-root: #4f6f9f;
+  --node-leaf: #38584e;
+  --node-internal: #5d4a2f;
+  --font-body: 'IBM Plex Sans', 'Source Sans 3', sans-serif;
+  --font-display: 'Fraunces', 'Iowan Old Style', serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', monospace;
+  --shadow: 0 12px 28px color-mix(in oklab, var(--background), transparent 30%);
+}
+
+[data-theme='light'] {
+  --background: #efe9dc;
+  --surface: #f6f2ea;
+  --surface-alt: #e7dfd0;
+  --text: #2b241a;
+  --text-muted: #574f42;
+  --accent: #896015;
+  --accent-hover: #6d4a09;
+  --border: #a79d89;
+  --code-bg: #e2d8c6;
+  --node-valid: #2e7f4f;
+  --node-tampered: #a12832;
+  --node-proof: #b8751e;
+  --node-root: #37699a;
+  --node-leaf: #4f7e70;
+  --node-internal: #8f6c39;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: var(--font-body);
+  color: var(--text);
+  background: radial-gradient(circle at 15% 0%, var(--surface-alt), var(--background) 55%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+}
+
+.page {
+  display: grid;
+  gap: 1rem;
+}
+
+.hero-header {
+  position: relative;
+  background: linear-gradient(145deg, var(--surface), var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  padding: 2.4rem 1.2rem 2rem;
+  box-shadow: var(--shadow);
+}
+
+.theme-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  z-index: 10;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--text-muted);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: var(--font-display);
+}
+
+h1 {
+  font-size: clamp(2.1rem, 4vw, 3.5rem);
+}
+
+h2 {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+h3 {
+  font-size: 1.2rem;
+}
+
+p,
+label,
+td,
+th,
+button,
+input,
+textarea {
+  font-size: 0.98rem;
+  line-height: 1.45;
+}
+
+.lede {
+  max-width: 66ch;
+  color: var(--text-muted);
+  margin-top: 0.7rem;
+}
+
+.panel {
+  background: linear-gradient(160deg, var(--surface), var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  padding: 1.2rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.copy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.copy-grid article,
+.system-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  padding: 0.8rem;
+}
+
+.flow {
+  margin-top: 0.65rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.6rem;
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  background: var(--code-bg);
+}
+
+.static-tree,
+.tree-shell {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  padding: 0.8rem;
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.tree-level {
+  display: grid;
+  grid-auto-flow: column;
+  justify-content: center;
+  gap: 0.6rem;
+  margin: 0.45rem 0;
+}
+
+.tree-node {
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface-alt);
+  color: var(--text);
+  min-width: 8rem;
+  padding: 0.46rem;
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+}
+
+button.tree-node {
+  cursor: pointer;
+}
+
+.tree-caption {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.tree-hash,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.tree-data {
+  font-size: 0.78rem;
+}
+
+.node-root {
+  background: color-mix(in oklab, var(--node-root), var(--surface) 68%);
+}
+
+.node-leaf {
+  background: color-mix(in oklab, var(--node-leaf), var(--surface) 68%);
+}
+
+.node-internal {
+  background: color-mix(in oklab, var(--node-internal), var(--surface) 68%);
+}
+
+.node-proof {
+  outline: 2px solid var(--node-proof);
+}
+
+.node-tampered {
+  background: color-mix(in oklab, var(--node-tampered), var(--surface) 60%);
+}
+
+.selected-node {
+  outline: 2px solid var(--accent);
+}
+
+.caption,
+.notice,
+.panel-empty {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.preset-row,
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.preset-btn,
+.primary,
+.secondary,
+.danger {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.48rem 0.8rem;
+  cursor: pointer;
+}
+
+.preset-btn:disabled,
+.primary:disabled,
+.secondary:disabled,
+.danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preset-btn:hover:not(:disabled),
+.primary:hover:not(:disabled),
+.secondary:hover:not(:disabled),
+.danger:hover:not(:disabled),
+.theme-toggle:hover {
+  border-color: var(--accent);
+}
+
+.preset-btn.active,
+.primary {
+  background: color-mix(in oklab, var(--accent), var(--surface) 65%);
+}
+
+.danger {
+  background: color-mix(in oklab, var(--node-tampered), var(--surface) 72%);
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+textarea,
+input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--code-bg);
+  color: var(--text);
+  padding: 0.58rem;
+  font-family: var(--font-mono);
+}
+
+.proof-panel {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  padding: 0.8rem;
+  background: var(--surface);
+}
+
+.proof-list {
+  margin: 0.55rem 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.proof-index {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.proof-valid {
+  color: var(--node-valid);
+  font-weight: 700;
+}
+
+.proof-invalid {
+  color: var(--node-tampered);
+  font-weight: 700;
+}
+
+.proof-size {
+  color: var(--node-proof);
+}
+
+.wrap {
+  overflow-wrap: anywhere;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+th {
+  background: var(--surface-alt);
+}
+
+.calculator {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  padding: 0.8rem;
+  background: var(--surface);
+}
+
+@media (max-width: 900px) {
+  .copy-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-hidden {
+    display: none;
+  }
+
+  .tree-level {
+    justify-content: start;
+  }
+}
