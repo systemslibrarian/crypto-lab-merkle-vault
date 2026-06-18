@@ -9,11 +9,24 @@
       })();
     </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>crypto-lab-merkle-vault</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="Interactive Merkle tree lab: build a binary hash tree with real SHA-256, generate O(log n) inclusion proofs, and watch tamper detection invalidate the root."
+    />
+    <meta name="theme-color" content="#161715" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#efe9dc" media="(prefers-color-scheme: light)" />
+    <title>Merkle Vault — Interactive Merkle Tree & Inclusion Proof Lab</title>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
     <div id="app"></div>
+    <!--
+      Persistent screen-reader announcer. It lives outside #app because the app
+      re-renders #app.innerHTML wholesale, which would otherwise destroy any
+      live region (and its pending announcement) before assistive tech reads it.
+    -->
+    <div id="sr-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

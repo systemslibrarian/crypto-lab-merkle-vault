@@ -107,6 +107,36 @@ const state: AppState = {
   proofCalculatorN: 1024,
 };
 
+const announcer = document.querySelector<HTMLDivElement>('#sr-announcer');
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+/**
+ * Announce a message to assistive tech via the persistent live region in
+ * index.html. Clearing first guarantees the region re-fires even when the same
+ * text is announced twice in a row (e.g. building the tree repeatedly).
+ */
+function announce(message: string): void {
+  if (!announcer) {
+    return;
+  }
+  announcer.textContent = '';
+  // A microtask gap lets screen readers detect the content change.
+  window.requestAnimationFrame(() => {
+    announcer.textContent = message;
+  });
+}
+
+function scrollIntoViewIfNeeded(selector: string): void {
+  const target = document.querySelector<HTMLElement>(selector);
+  if (!target) {
+    return;
+  }
+  target.scrollIntoView({
+    behavior: prefersReducedMotion.matches ? 'auto' : 'smooth',
+    block: 'nearest',
+  });
+}
+
 function truncate(value: string, max = 30): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
 }
@@ -178,11 +208,10 @@ function treeLevels(root: MerkleNode): MerkleNode[][] {
   const levels: MerkleNode[][] = [[root]];
   while (levels[levels.length - 1].some((node) => !node.isLeaf)) {
     const next: MerkleNode[] = [];
-    const seen = new Set<MerkleNode>();
     for (const node of levels[levels.length - 1]) {
       if (node.left && node.right) {
-        if (!seen.has(node.left)) { seen.add(node.left); next.push(node.left); }
-        if (!seen.has(node.right)) { seen.add(node.right); next.push(node.right); }
+        next.push(node.left);
+        next.push(node.right);
       }
     }
     if (next.length === 0) break;
@@ -252,11 +281,16 @@ function renderTree(): string {
     .map((nodes, depth) => {
       const html = nodes
         .map((node) => {
+          const isSelectableLeaf =
+            node.isLeaf && !node.isDuplicated && node.leafIndex !== undefined;
+          const isSelected =
+            state.selectedLeafIndex === node.leafIndex && !node.isDuplicated;
           const hiddenMobile =
             depth > 0 &&
             depth < levels.length - 1 &&
-            !(state.selectedLeafIndex === node.leafIndex && !node.isDuplicated) &&
+            !isSelected &&
             !pathHashes.has(node.hash);
+          const isTampered = state.tamperedPathHashes.has(node.hash);
           const caption =
             depth === 0
               ? 'Root'
@@ -266,23 +300,47 @@ function renderTree(): string {
                   : `Leaf ${node.leafIndex}`
                 : `Internal d${depth}`;
           const leafData =
-            node.isLeaf && node.leafIndex !== undefined && !node.isDuplicated
-              ? `<span class="tree-data">${escapeHtml(truncate(state.leaves[node.leafIndex] ?? ''))}</span>`
+            isSelectableLeaf
+              ? `<span class="tree-data">${escapeHtml(truncate(state.leaves[node.leafIndex!] ?? ''))}</span>`
               : '';
-          const selectAttr =
-            node.isLeaf && !node.isDuplicated && node.leafIndex !== undefined
-              ? `data-leaf-index="${node.leafIndex}"`
-              : '';
+          // Non-color cue: tampered nodes also carry a visible badge + label,
+          // so the state is not communicated by color alone (WCAG 1.4.1).
+          const tamperBadge = isTampered
+            ? '<span class="tree-flag" aria-hidden="true">⚠ tampered</span>'
+            : '';
 
-          return `<button class="${treeNodeClass(node, depth, hiddenMobile)}" ${selectAttr}>
+          // Full hash and role exposed to assistive tech; the visible label is truncated.
+          const describe = `${caption}, hash ${node.hash}${isTampered ? ', tampered' : ''}`;
+
+          if (isSelectableLeaf) {
+            const label = `Select ${caption} for proof. ${describe}`;
+            return `<button
+                type="button"
+                class="${treeNodeClass(node, depth, hiddenMobile)}"
+                data-leaf-index="${node.leafIndex}"
+                aria-pressed="${isSelected ? 'true' : 'false'}"
+                aria-label="${escapeHtml(label)}">
               <span class="tree-caption">${caption}</span>
-              <span class="tree-hash">${node.hash.slice(0, 8)}...</span>
+              <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
               ${leafData}
+              ${tamperBadge}
             </button>`;
+          }
+
+          return `<div
+              class="${treeNodeClass(node, depth, hiddenMobile)}"
+              role="treeitem"
+              aria-label="${escapeHtml(describe)}">
+            <span class="tree-caption">${caption}</span>
+            <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
+            ${tamperBadge}
+          </div>`;
         })
         .join('');
 
-      return `<div class="tree-level level-${depth}">${html}</div>`;
+      const levelLabel =
+        depth === 0 ? 'Root level' : depth === levels.length - 1 ? 'Leaf level' : `Level ${depth}`;
+      return `<div class="tree-level level-${depth}" role="group" aria-label="${levelLabel}">${html}</div>`;
     })
     .join('');
 }
@@ -325,8 +383,8 @@ function renderProofPanel(): string {
 
   const status =
     state.proofValid === true
-      ? '<p class="proof-valid">✅ PROOF VALID</p>'
-      : '<p class="proof-invalid">❌ PROOF INVALID</p>';
+      ? '<p class="proof-valid"><span aria-hidden="true">✅</span> PROOF VALID</p>'
+      : '<p class="proof-invalid"><span aria-hidden="true">❌</span> PROOF INVALID</p>';
 
   return `
     <div class="proof-block">
@@ -336,8 +394,14 @@ function renderProofPanel(): string {
       <ol class="proof-list">${siblings}</ol>
       <p><strong>Root recomputation:</strong></p>
       <ol class="proof-list">${steps}</ol>
-      <p><strong>Expected root:</strong> <span class="mono wrap">${state.proof.root}</span></p>
-      ${status}
+      <p class="root-row">
+        <strong>Expected root:</strong>
+        <span class="mono wrap" id="root-hash">${state.proof.root}</span>
+        <button type="button" class="copy-btn" data-copy="${state.proof.root}" aria-label="Copy root hash to clipboard">
+          <span aria-hidden="true">Copy</span>
+        </button>
+      </p>
+      <div role="status" aria-live="polite" class="proof-status">${status}</div>
       <p class="proof-size">${proofSummary()}</p>
     </div>
   `;
@@ -361,11 +425,14 @@ function renderCalculator(): string {
 
 function renderApp(): void {
   const focusedId = (document.activeElement as HTMLElement)?.id ?? null;
-  const cursorPos =
-    document.activeElement &&
-    'selectionStart' in document.activeElement
-      ? (document.activeElement as HTMLTextAreaElement).selectionStart
-      : null;
+  let cursorPos: number | null = null;
+  if (document.activeElement) {
+    try {
+      cursorPos = (document.activeElement as any).selectionStart ?? null;
+    } catch {
+      // Ignore
+    }
+  }
 
   const duplicateNote =
     state.leaves.length % 2 === 1
@@ -373,10 +440,14 @@ function renderApp(): void {
       : '<p class="notice">Even leaf count: no leaf duplication required at the first level.</p>';
 
   app!.innerHTML = `
-    <main class="page">
+    <main class="page" id="main" tabindex="-1">
       <header class="hero-header">
-        <button id="theme-toggle" class="theme-toggle" aria-label=""></button>
-        <p class="eyebrow">crypto-lab</p>
+        <div class="hero-top">
+          <p class="eyebrow">crypto-lab</p>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">
+            <span class="theme-toggle-icon" aria-hidden="true"></span>
+          </button>
+        </div>
         <h1>Merkle Vault</h1>
         <p class="lede">Build a binary Merkle tree with real SHA-256 via Web Crypto, generate inclusion proofs, and test tamper detection.</p>
       </header>
@@ -423,7 +494,7 @@ function renderApp(): void {
         <div class="preset-row">
           ${presets
             .map(
-              (preset) => `<button class="preset-btn ${state.activePreset === preset.key ? 'active' : ''}" data-preset="${preset.key}">${preset.label}</button>`,
+              (preset) => `<button type="button" class="preset-btn ${state.activePreset === preset.key ? 'active' : ''}" data-preset="${preset.key}" aria-pressed="${state.activePreset === preset.key ? 'true' : 'false'}">${preset.label}</button>`,
             )
             .join('')}
         </div>
@@ -435,18 +506,24 @@ function renderApp(): void {
         </div>
         ${state.proofError ? `<p class="proof-invalid">${state.proofError}</p>` : ''}
         <div class="action-row">
-          <button id="build-tree" class="primary">Build Tree</button>
-          <button id="generate-proof" class="secondary" ${state.tree ? '' : 'disabled'}>Generate Proof</button>
-          <button id="tamper-leaf" class="danger" ${state.tree && !state.tampered ? '' : 'disabled'}>Tamper Leaf</button>
-          <button id="restore-tree" class="secondary" ${state.tampered ? '' : 'disabled'}>Restore Original</button>
+          <button type="button" id="build-tree" class="primary">Build Tree</button>
+          <button type="button" id="generate-proof" class="secondary" ${state.tree ? '' : 'disabled'}>Generate Proof</button>
+          <button type="button" id="tamper-leaf" class="danger" ${state.tree && !state.tampered ? '' : 'disabled'}>Tamper Leaf</button>
+          <button type="button" id="restore-tree" class="secondary" ${state.tampered ? '' : 'disabled'}>Restore Original</button>
         </div>
-        <div id="tree-view" class="tree-shell">${renderTree()}</div>
+        <div
+          id="tree-view"
+          class="tree-shell"
+          role="tree"
+          aria-label="Merkle tree visualization. Select a leaf to set the proof target."
+          tabindex="0"
+        >${renderTree()}</div>
         <section class="proof-panel">
           <h3>Inclusion Proof and Verification</h3>
           ${renderProofPanel()}
           ${
             state.tampered && state.tree && state.originalTree
-              ? `<p class="proof-invalid">❌ PROOF INVALID - Root changed from ${state.originalTree.root.hash.slice(0, 12)}... to ${state.tree.root.hash.slice(0, 12)}...</p>`
+              ? `<p class="proof-invalid"><span aria-hidden="true">❌</span> PROOF INVALID — Root changed from ${state.originalTree.root.hash.slice(0, 12)}... to ${state.tree.root.hash.slice(0, 12)}...</p>`
               : ''
           }
         </section>
@@ -475,50 +552,72 @@ function renderApp(): void {
 
       <section class="panel" id="section-d">
         <h2>Section D: Proof Size and Efficiency</h2>
-        <table>
-          <thead>
-            <tr><th>Leaves (n)</th><th>Tree depth</th><th>Proof size</th><th>Proof bytes</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>8</td><td>3</td><td>3 hashes</td><td>96 bytes</td></tr>
-            <tr><td>16</td><td>4</td><td>4 hashes</td><td>128 bytes</td></tr>
-            <tr><td>1,024</td><td>10</td><td>10 hashes</td><td>320 bytes</td></tr>
-            <tr><td>1,048,576 (1M)</td><td>20</td><td>20 hashes</td><td>640 bytes</td></tr>
-            <tr><td>1,073,741,824 (1B)</td><td>30</td><td>30 hashes</td><td>960 bytes</td></tr>
-          </tbody>
-        </table>
-        <div class="calculator">
-          <label for="proof-n">Number of leaves (2 - 1,000,000,000)</label>
-          <input id="proof-n" type="number" min="2" max="1000000000" value="${state.proofCalculatorN}" />
-          ${renderCalculator()}
+        <div class="table-scroll" role="region" aria-label="Proof size by leaf count, scrollable" tabindex="0">
+          <table>
+            <caption class="sr-only">Tree depth, proof size, and proof bytes as the number of leaves grows.</caption>
+            <thead>
+              <tr><th scope="col">Leaves (n)</th><th scope="col">Tree depth</th><th scope="col">Proof size</th><th scope="col">Proof bytes</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>8</td><td>3</td><td>3 hashes</td><td>96 bytes</td></tr>
+              <tr><td>16</td><td>4</td><td>4 hashes</td><td>128 bytes</td></tr>
+              <tr><td>1,024</td><td>10</td><td>10 hashes</td><td>320 bytes</td></tr>
+              <tr><td>1,048,576 (1M)</td><td>20</td><td>20 hashes</td><td>640 bytes</td></tr>
+              <tr><td>1,073,741,824 (1B)</td><td>30</td><td>30 hashes</td><td>960 bytes</td></tr>
+            </tbody>
+          </table>
         </div>
-        <table>
-          <thead>
-            <tr><th>Approach</th><th>Proof size</th><th>Notes</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>Download all data</td><td>O(n)</td><td>No cryptography needed</td></tr>
-            <tr><td>Bloom filter</td><td>O(n) space, O(1) query</td><td>Probabilistic, false positives possible</td></tr>
-            <tr><td>Merkle inclusion proof</td><td>O(log n)</td><td>Cryptographic, no false positives</td></tr>
-            <tr><td>Verkle proof</td><td>O(1) amortized</td><td>Uses polynomial commitments for smaller proofs; not implemented here</td></tr>
-          </tbody>
-        </table>
+        <div class="calculator">
+          <label for="proof-n">Number of leaves</label>
+          <input
+            id="proof-n"
+            type="number"
+            inputmode="numeric"
+            min="2"
+            max="1000000000"
+            value="${state.proofCalculatorN}"
+            aria-describedby="proof-n-hint"
+          />
+          <p id="proof-n-hint" class="field-hint">Enter 2 to 1,000,000,000 leaves.</p>
+          <div class="calculator-output" role="status" aria-live="polite">${renderCalculator()}</div>
+        </div>
+        <div class="table-scroll" role="region" aria-label="Membership proof approaches compared, scrollable" tabindex="0">
+          <table>
+            <caption class="sr-only">Comparison of dataset membership approaches by proof size.</caption>
+            <thead>
+              <tr><th scope="col">Approach</th><th scope="col">Proof size</th><th scope="col">Notes</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Download all data</td><td>O(n)</td><td>No cryptography needed</td></tr>
+              <tr><td>Bloom filter</td><td>O(n) space, O(1) query</td><td>Probabilistic, false positives possible</td></tr>
+              <tr><td>Merkle inclusion proof</td><td>O(log n)</td><td>Cryptographic, no false positives</td></tr>
+              <tr><td>Verkle proof</td><td>O(1) amortized</td><td>Uses polynomial commitments for smaller proofs; not implemented here</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </main>
   `;
 
   const themeToggle = document.querySelector<HTMLButtonElement>('#theme-toggle');
   if (themeToggle) {
+    const icon = themeToggle.querySelector<HTMLSpanElement>('.theme-toggle-icon');
     const currentTheme = document.documentElement.getAttribute('data-theme') ?? 'dark';
     const isDark = currentTheme === 'dark';
-    themeToggle.textContent = isDark ? '🌙' : '☀️';
+    if (icon) {
+      icon.textContent = isDark ? '🌙' : '☀️';
+    }
+    // aria-pressed = "is dark mode active"; label states the action the click performs.
+    themeToggle.setAttribute('aria-pressed', String(isDark));
     themeToggle.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+    themeToggle.title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
 
     themeToggle.addEventListener('click', () => {
       const active = document.documentElement.getAttribute('data-theme') ?? 'dark';
       const next = active === 'dark' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
+      announce(`${next === 'dark' ? 'Dark' : 'Light'} theme enabled.`);
       renderApp();
     });
   }
@@ -542,6 +641,7 @@ function renderApp(): void {
       state.tampered = false;
       state.originalProofCheckAgainstTampered = null;
       state.tamperedPathHashes = new Set<string>();
+      announce(`${preset.label} preset loaded with ${preset.items.length} leaves.`);
       renderApp();
     });
   });
@@ -559,10 +659,12 @@ function renderApp(): void {
   buildButton?.addEventListener('click', async () => {
     if (state.leaves.length < 2 || state.leaves.length > 16) {
       state.proofError = 'Leaf count must be between 2 and 16.';
+      announce(`Cannot build tree. ${state.proofError}`);
       renderApp();
       return;
     }
     state.tree = await buildMerkleTree(state.leaves);
+    announce(`Tree built with ${state.leaves.length} leaves and root ${state.tree.root.hash.slice(0, 12)}.`);
     state.originalTree = state.tree;
     state.selectedLeafIndex = Math.min(state.selectedLeafIndex, state.leaves.length - 1);
     state.proof = null;
@@ -587,7 +689,11 @@ function renderApp(): void {
     state.proofSteps = await computeProofSteps(state.proof);
     state.proofValid = await verifyProof(state.proof);
     state.proofError = null;
+    announce(
+      `Proof generated for leaf ${state.selectedLeafIndex} with ${state.proof.siblings.length} sibling hashes. Proof is ${state.proofValid ? 'valid' : 'invalid'}.`,
+    );
     renderApp();
+    scrollIntoViewIfNeeded('.proof-panel');
   });
 
   const tamperButton = document.querySelector<HTMLButtonElement>('#tamper-leaf');
@@ -614,6 +720,9 @@ function renderApp(): void {
       state.proofValid = state.originalProofCheckAgainstTampered;
     }
 
+    announce(
+      `Leaf ${target} tampered. The root hash changed and the original proof is now invalid.`,
+    );
     renderApp();
   });
 
@@ -643,6 +752,7 @@ function renderApp(): void {
     state.proofError = null;
     state.originalProofCheckAgainstTampered = null;
     state.tamperedPathHashes = new Set<string>();
+    announce('Original data restored. The tree is back to its untampered state.');
     renderApp();
   });
 
@@ -650,7 +760,31 @@ function renderApp(): void {
     btn.addEventListener('click', () => {
       const value = Number.parseInt(btn.dataset.leafIndex ?? '0', 10);
       state.selectedLeafIndex = value;
+      announce(`Leaf ${value} selected as proof target.`);
       renderApp();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const value = btn.dataset.copy ?? '';
+      try {
+        await navigator.clipboard.writeText(value);
+        const original = btn.querySelector('span');
+        if (original) {
+          original.textContent = 'Copied';
+        }
+        btn.classList.add('copied');
+        announce('Root hash copied to clipboard.');
+        window.setTimeout(() => {
+          if (original) {
+            original.textContent = 'Copy';
+          }
+          btn.classList.remove('copied');
+        }, 1600);
+      } catch {
+        announce('Copy failed. Your browser blocked clipboard access.');
+      }
     });
   });
 
@@ -667,9 +801,13 @@ function renderApp(): void {
     const el = document.getElementById(focusedId);
     if (el) {
       el.focus();
-      if (cursorPos !== null && 'selectionStart' in el) {
-        (el as HTMLTextAreaElement).selectionStart = cursorPos;
-        (el as HTMLTextAreaElement).selectionEnd = cursorPos;
+      if (cursorPos !== null) {
+        try {
+          (el as any).selectionStart = cursorPos;
+          (el as any).selectionEnd = cursorPos;
+        } catch {
+          // Ignore
+        }
       }
     }
   }
