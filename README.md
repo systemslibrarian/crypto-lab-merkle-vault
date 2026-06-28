@@ -1,25 +1,28 @@
+# crypto-lab-merkle-vault
+
 [![crypto-lab portfolio](https://img.shields.io/badge/crypto--lab-portfolio-blue?style=flat-square)](https://systemslibrarian.github.io/crypto-lab/)
 [![Deploy to GitHub Pages](https://github.com/systemslibrarian/crypto-lab-merkle-vault/actions/workflows/pages.yml/badge.svg)](https://github.com/systemslibrarian/crypto-lab-merkle-vault/actions/workflows/pages.yml)
 
-## 1. What It Is
+## What It Is
 
 crypto-lab-merkle-vault implements binary Merkle trees and inclusion proofs using SHA-256 via the Web Crypto API. A Merkle tree is a binary hash tree where leaf nodes contain hashes of data items and internal nodes contain hashes of their children, producing a single root hash that cryptographically commits to the entire dataset. An inclusion proof demonstrates that a specific item is in the tree using only O(log n) hashes - for a million-item dataset, 20 hashes suffice. The security model is collision resistance of SHA-256: an attacker cannot produce a valid proof for an item not in the tree without finding a SHA-256 collision. Domain separation prefixes (0x00 for leaves, 0x01 for internal nodes) prevent second preimage attacks on the tree structure per RFC 6962.
 
-## 2. When to Use It
+## When to Use It
 
 - Use Merkle trees when you need to commit to a large dataset and later prove membership of individual items efficiently - blockchain transactions, certificate logs, software package manifests.
 - Use inclusion proofs when verifiers cannot download the full dataset but need cryptographic assurance that a specific item is present.
 - Use append-only Merkle logs (as in Certificate Transparency) when you need a tamper-evident audit trail where deletions are detectable.
 - Do not use Merkle trees for exclusion proofs without additional structure - proving an item is NOT in a tree requires sorted Merkle trees or accumulators.
 - Do not omit domain separation prefixes - the second preimage attack on trees without 0x00/0x01 prefixes is a real structural vulnerability, not a theoretical concern.
+- Do NOT treat this as production code - it is a teaching demo for exploring Merkle tree structure and proofs, not a hardened transparency-log library.
 
-## 3. Live Demo
+## Live Demo
 
-[https://systemslibrarian.github.io/crypto-lab-merkle-vault/](https://systemslibrarian.github.io/crypto-lab-merkle-vault/)
+**[systemslibrarian.github.io/crypto-lab-merkle-vault](https://systemslibrarian.github.io/crypto-lab-merkle-vault/)**
 
 Enter up to 16 items (or use the library catalog, Git commits, or transaction presets), build the tree with real SHA-256, select any leaf, and generate an inclusion proof. Click "Tamper leaf" to modify one item and watch the root change while the original proof becomes invalid. The proof size calculator shows how O(log n) scales to billions of items.
 
-## 4. What Can Go Wrong
+## What Can Go Wrong
 
 - Missing domain separation: without 0x00/0x01 prefixes, an internal node hash can be presented as a leaf hash, constructing a valid-looking proof for data not in the tree (second preimage attack on tree structure).
 - Odd-leaf duplication leaks: duplicating the last leaf to even the tree can allow an attacker to forge proofs for the duplicated position - implementations should track which positions are real vs. duplicated.
@@ -27,7 +30,7 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 - Hash function weakness: Merkle tree security reduces entirely to collision resistance of the underlying hash. SHA-1-based Merkle trees (early Git) are weakened by SHAttered - Git is migrating to SHA-256.
 - Unbalanced trees and depth confusion: non-binary or unbalanced tree implementations can produce ambiguous proof paths where the same proof validates against multiple roots.
 
-## 5. Real-World Usage
+## Real-World Usage
 
 - Git object model: every Git commit contains the SHA-256 (or SHA-1) root of a tree object that hashes all files and subdirectories, making the entire repository history tamper-evident.
 - Bitcoin SPV: lightweight Bitcoin clients verify transaction inclusion using Merkle proofs against the block header's Merkle root, downloading only 80-byte headers rather than full blocks.
@@ -35,12 +38,25 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 - Package managers: npm, Yarn, and Cargo use hash trees to verify package integrity - a package manifest commits to all file hashes, and the package registry signs the root.
 - Ethereum state trie: Ethereum's Patricia-Merkle trie commits to the entire world state (all account balances and contract storage) in each block header.
 
-### Cross-links
+## How to Run Locally
 
-- [Babel Hash](https://systemslibrarian.github.io/crypto-lab-babel-hash/) - SHA-256, SHA3-256, BLAKE3 internals
-- [ZK Proof Lab](https://systemslibrarian.github.io/crypto-lab-zk-proof-lab/) - hash commitments and ZK protocols
-- [SPHINCS+ Ledger](https://systemslibrarian.github.io/crypto-lab-sphincs-ledger/) - hash-based signatures using Merkle trees
-- [Pairing Gate](https://systemslibrarian.github.io/crypto-lab-pairing-gate/) - BLS12-381 and Ethereum consensus
-- [crypto-lab home](https://systemslibrarian.github.io/crypto-lab/)
+```bash
+git clone https://github.com/systemslibrarian/crypto-lab-merkle-vault
+cd crypto-lab-merkle-vault
+npm install
+npm run dev
+```
 
-*"So whether you eat or drink or whatever you do, do it all for the glory of God." - 1 Corinthians 10:31*
+## Related Demos
+
+- [crypto-lab-babel-hash](https://systemslibrarian.github.io/crypto-lab-babel-hash/) - SHA-256, SHA3-256, BLAKE3 internals behind the tree.
+- [crypto-lab-hash-zoo](https://systemslibrarian.github.io/crypto-lab-hash-zoo/) - Merkle-Damgard hash construction and properties.
+- [crypto-lab-sphincs-ledger](https://systemslibrarian.github.io/crypto-lab-sphincs-ledger/) - SLH-DSA hash-based signatures built on Merkle trees.
+- [crypto-lab-lms-ledger](https://systemslibrarian.github.io/crypto-lab-lms-ledger/) - LMS/HSS stateful hash-based signatures using Merkle authentication paths.
+- [crypto-lab-collision-vault](https://systemslibrarian.github.io/crypto-lab-collision-vault/) - what happens when the underlying hash's collision resistance fails.
+
+---
+
+*One of 60+ browser demos in the [Crypto Lab](https://crypto-lab.systemslibrarian.dev/) suite.*
+
+*"So whether you eat or drink or whatever you do, do it all for the glory of God." — 1 Corinthians 10:31*
