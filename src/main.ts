@@ -329,7 +329,7 @@ function renderTree(): string {
 
           return `<div
               class="${treeNodeClass(node, depth, hiddenMobile)}"
-              role="treeitem"
+              role="group"
               aria-label="${escapeHtml(describe)}">
             <span class="tree-caption">${caption}</span>
             <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
@@ -514,7 +514,7 @@ function renderApp(): void {
         <div
           id="tree-view"
           class="tree-shell"
-          role="tree"
+          role="group"
           aria-label="Merkle tree visualization. Select a leaf to set the proof target."
           tabindex="0"
         >${renderTree()}</div>

@@ -11,6 +11,11 @@
   --node-valid: #3e9a61;
   --node-tampered: #af3c47;
   --node-proof: #ca9442;
+  /* Status text colors are read against a panel/surface background, so they run
+     brighter than the fill colors above to clear 4.5:1 (WCAG 1.4.3). */
+  --valid-text: #5fd08a;
+  --invalid-text: #ff7a86;
+  --proof-text: #ca9442;
   --node-root: #4f6f9f;
   --node-leaf: #38584e;
   --node-internal: #5d4a2f;
@@ -33,6 +38,10 @@
   --node-valid: #2e7f4f;
   --node-tampered: #a12832;
   --node-proof: #b8751e;
+  /* Darker status inks for the light surfaces. */
+  --valid-text: #1c7a43;
+  --invalid-text: #b0212c;
+  --proof-text: #7e5300;
   --node-root: #37699a;
   --node-leaf: #4f7e70;
   --node-internal: #8f6c39;
@@ -251,6 +260,12 @@ button.tree-node {
   background: color-mix(in oklab, var(--node-tampered), var(--surface) 60%);
 }
 
+/* On the tampered fill the muted caption drops below 4.5:1 (WCAG 1.4.3), so use
+   the full-strength ink for both the caption and the warning badge here. */
+.node-tampered .tree-caption {
+  color: var(--text);
+}
+
 .selected-node {
   outline: 2px solid var(--accent);
 }
@@ -358,17 +373,17 @@ input {
 }
 
 .proof-valid {
-  color: var(--node-valid);
+  color: var(--valid-text);
   font-weight: 700;
 }
 
 .proof-invalid {
-  color: var(--node-tampered);
+  color: var(--invalid-text);
   font-weight: 700;
 }
 
 .proof-size {
-  color: var(--node-proof);
+  color: var(--proof-text);
 }
 
 .wrap {
@@ -471,8 +486,10 @@ textarea:focus-visible,
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: var(--text);
-  background: color-mix(in oklab, var(--node-tampered), transparent 35%);
+  /* Solid, opaque badge (white ink on the danger fill) so the label clears
+     4.5:1 regardless of the tampered node's own mixed background (WCAG 1.4.3). */
+  color: #ffffff;
+  background-color: var(--node-tampered);
   padding: 0.05rem 0.35rem;
   border-radius: 0.4rem;
 }
