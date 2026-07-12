@@ -478,15 +478,16 @@ function renderApp(): void {
 
   app!.innerHTML = `
     <main class="page" id="main" tabindex="-1">
-      <header class="hero-header">
-        <div class="hero-top">
-          <p class="eyebrow">crypto-lab</p>
-          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">
-            <span class="theme-toggle-icon" aria-hidden="true"></span>
-          </button>
+      <header class="cl-hero">
+        <div class="cl-hero-main">
+          <h1 class="cl-hero-title">Merkle Vault</h1>
+          <p class="cl-hero-sub">Binary hash tree · SHA-256 · O(log n) inclusion proofs</p>
+          <p class="cl-hero-desc">Build a binary Merkle tree with real SHA-256, generate O(log n) inclusion proofs for any leaf, and watch tamper detection invalidate the root.</p>
         </div>
-        <h1>Merkle Vault</h1>
-        <p class="lede">Build a binary Merkle tree with real SHA-256 via Web Crypto, generate inclusion proofs, and test tamper detection.</p>
+        <aside class="cl-hero-why" aria-label="Why it matters">
+          <span class="cl-hero-why-label">WHY IT MATTERS</span>
+          <p class="cl-hero-why-text">Merkle proofs let a client confirm one record belongs to a massive dataset by checking only a handful of hashes — the backbone of Git, Bitcoin, and Certificate Transparency. Domain separation is what keeps those proofs unforgeable.</p>
+        </aside>
       </header>
 
       <section class="panel" id="section-a">
