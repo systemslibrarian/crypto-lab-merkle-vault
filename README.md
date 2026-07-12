@@ -7,6 +7,8 @@
 
 crypto-lab-merkle-vault implements binary Merkle trees and inclusion proofs using SHA-256 via the Web Crypto API. A Merkle tree is a binary hash tree where leaf nodes contain hashes of data items and internal nodes contain hashes of their children, producing a single root hash that cryptographically commits to the entire dataset. An inclusion proof demonstrates that a specific item is in the tree using only O(log n) hashes - for a million-item dataset, 20 hashes suffice. The security model is collision resistance of SHA-256: an attacker cannot produce a valid proof for an item not in the tree without finding a SHA-256 collision. Domain separation prefixes (0x00 for leaves, 0x01 for internal nodes) prevent second preimage attacks on the tree structure per RFC 6962.
 
+**Odd-node handling is selectable, and the default is the safe one.** When a level has an odd number of nodes, the demo defaults to the RFC 6962 rule — the lone node is *promoted* (carried up unchanged), never duplicated. A "Bitcoin — duplicate" mode is also provided, which instead hashes the lone node with a copy of itself. That Bitcoin convention is the exact CVE-2012-2459 block-malleability pattern: the leaf lists `[a,b,c]` and `[a,b,c,c]` hash to the *same* root. The app computes both roots live from real SHA-256 so you can see the collision appear in Bitcoin mode and disappear in RFC 6962 mode. This is why the "per RFC 6962" framing above is honest for the default construction, and the vulnerable mode is clearly labelled as such.
+
 ## When to Use It
 
 - Use Merkle trees when you need to commit to a large dataset and later prove membership of individual items efficiently - blockchain transactions, certificate logs, software package manifests.
@@ -20,12 +22,12 @@ crypto-lab-merkle-vault implements binary Merkle trees and inclusion proofs usin
 
 **[systemslibrarian.github.io/crypto-lab-merkle-vault](https://systemslibrarian.github.io/crypto-lab-merkle-vault/)**
 
-Enter up to 16 items (or use the library catalog, Git commits, or transaction presets), build the tree with real SHA-256, select any leaf, and generate an inclusion proof. Click "Tamper leaf" to modify one item and watch the root change while the original proof becomes invalid. The proof size calculator shows how O(log n) scales to billions of items.
+Enter up to 16 items (or use the library catalog, Git commits, or transaction presets), pick the odd-node convention (RFC 6962 promote or Bitcoin duplicate), build the tree with real SHA-256, select any leaf, and generate an inclusion proof. Click "Tamper leaf" to modify one item and watch the root change while the original proof becomes invalid. In Bitcoin mode, a proof that lands on a self-copied position is flagged as an "odd-leaf duplication leak." The live malleability panel recomputes `root([a,b,c])` vs `root([a,b,c,c])` under both conventions. The proof size calculator shows how O(log n) scales to billions of items.
 
 ## What Can Go Wrong
 
 - Missing domain separation: without 0x00/0x01 prefixes, an internal node hash can be presented as a leaf hash, constructing a valid-looking proof for data not in the tree (second preimage attack on tree structure).
-- Odd-leaf duplication leaks: duplicating the last leaf to even the tree can allow an attacker to forge proofs for the duplicated position - implementations should track which positions are real vs. duplicated.
+- Odd-leaf duplication leaks: duplicating the last leaf to even the tree can allow an attacker to forge proofs for the duplicated position - implementations should track which positions are real vs. duplicated. This demo lets you switch into that (Bitcoin) mode and see it: `[a,b,c]` and `[a,b,c,c]` collide on one root (CVE-2012-2459), and any proof step that is a self-copy is flagged. The RFC 6962 default (promote, not duplicate) removes the leak entirely.
 - Root confusion across trees: a valid inclusion proof is only meaningful relative to a specific root. Without binding the root to a signed, timestamped commitment, an attacker can substitute a different tree with the same structure.
 - Hash function weakness: Merkle tree security reduces entirely to collision resistance of the underlying hash. SHA-1-based Merkle trees (early Git) are weakened by SHAttered - Git is migrating to SHA-256.
 - Unbalanced trees and depth confusion: non-binary or unbalanced tree implementations can produce ambiguous proof paths where the same proof validates against multiple roots.
@@ -44,7 +46,9 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 git clone https://github.com/systemslibrarian/crypto-lab-merkle-vault
 cd crypto-lab-merkle-vault
 npm install
-npm run dev
+npm run dev      # dev server
+npm test         # crypto unit tests (KATs, round-trip, forgery, CVE-2012-2459, fuzz)
+npm run test:a11y  # WCAG A/AA accessibility gate (axe-core)
 ```
 
 ## Related Demos

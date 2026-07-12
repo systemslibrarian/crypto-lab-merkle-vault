@@ -2,11 +2,13 @@ import './style.css';
 import {
   buildMerkleTree,
   generateProof,
+  hashInternal,
   tamperLeaf,
   verifyProof,
   type InclusionProof,
   type MerkleNode,
   type MerkleTree,
+  type OddMode,
 } from './merkle';
 
 interface Preset {
@@ -22,10 +24,17 @@ interface StepHash {
   result: string;
 }
 
+interface MalleabilityResult {
+  rootThree: string;
+  rootFour: string;
+  collides: boolean;
+}
+
 interface AppState {
   activePreset: string;
   textareaValue: string;
   leaves: string[];
+  oddMode: OddMode;
   tree: MerkleTree | null;
   originalTree: MerkleTree | null;
   selectedLeafIndex: number;
@@ -37,6 +46,7 @@ interface AppState {
   originalProofCheckAgainstTampered: boolean | null;
   tamperedPathHashes: Set<string>;
   proofCalculatorN: number;
+  malleability: Record<OddMode, MalleabilityResult> | null;
 }
 
 const presets: Preset[] = [
@@ -94,6 +104,7 @@ const state: AppState = {
   activePreset: presets[0].key,
   textareaValue: initialLeaves.join('\n'),
   leaves: initialLeaves.slice(),
+  oddMode: 'promote',
   tree: null,
   originalTree: null,
   selectedLeafIndex: 0,
@@ -105,6 +116,7 @@ const state: AppState = {
   originalProofCheckAgainstTampered: null,
   tamperedPathHashes: new Set<string>(),
   proofCalculatorN: 1024,
+  malleability: null,
 };
 
 const announcer = document.querySelector<HTMLDivElement>('#sr-announcer');
@@ -150,37 +162,6 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
-async function hashInternal(leftHex: string, rightHex: string): Promise<string> {
-  const input = concatBytes(
-    new Uint8Array([0x01]),
-    hexToBytes(leftHex),
-    hexToBytes(rightHex),
-  );
-  const buf = await crypto.subtle.digest('SHA-256', input as Uint8Array<ArrayBuffer>);
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 async function computeProofSteps(proof: InclusionProof): Promise<StepHash[]> {
   const steps: StepHash[] = [];
   let current = proof.leafHash;
@@ -209,7 +190,14 @@ function treeLevels(root: MerkleNode): MerkleNode[][] {
   while (levels[levels.length - 1].some((node) => !node.isLeaf)) {
     const next: MerkleNode[] = [];
     for (const node of levels[levels.length - 1]) {
-      if (node.left && node.right) {
+      if (node.isLeaf) {
+        // A leaf on a non-final level (can happen when a promoted sibling sits
+        // beside a taller subtree): carry it straight down so columns align.
+        next.push(node);
+      } else if (node.isPromoted && node.left) {
+        // RFC 6962 pass-through node has a single child; descend into it.
+        next.push(node.left);
+      } else if (node.left && node.right) {
         next.push(node.left);
         next.push(node.right);
       }
@@ -223,6 +211,12 @@ function treeLevels(root: MerkleNode): MerkleNode[][] {
 function findPathToLeaf(node: MerkleNode, leafIndex: number): MerkleNode[] | null {
   if (node.isLeaf && node.leafIndex === leafIndex && !node.isDuplicated) {
     return [node];
+  }
+
+  // RFC 6962 pass-through node: single child, descend through it.
+  if (node.isPromoted && node.left) {
+    const promotedPath = findPathToLeaf(node.left, leafIndex);
+    return promotedPath ? [node, ...promotedPath] : null;
   }
 
   if (!node.left || !node.right) {
@@ -365,12 +359,21 @@ function renderProofPanel(): string {
 
   const siblings = state.proof.siblings
     .map(
-      (sibling, index) => `<li>
-        <span class="proof-index">Level ${index + 1} (${sibling.position})</span>
+      (sibling, index) => `<li${sibling.isSelfCopy ? ' class="sibling-selfcopy"' : ''}>
+        <span class="proof-index">Level ${index + 1} (${sibling.position})${sibling.isSelfCopy ? ' <span class="tree-flag">self-copy</span>' : ''}</span>
         <span class="mono">${sibling.hash}</span>
       </li>`,
     )
     .join('');
+
+  const selfCopyWarning = state.proof.usesDuplicatedSibling
+    ? `<p class="notice notice-warn" role="note">
+        <span aria-hidden="true">⚠</span> This proof relies on a <strong>self-copy sibling</strong> — the target's own
+        subtree hash duplicated to fill an odd slot (Bitcoin mode). A verifier that does not also check the
+        tree size can be fooled into accepting a forged position here. This is the odd-leaf duplication leak;
+        switch to RFC 6962 mode to remove it.
+      </p>`
+    : '';
 
   const steps = state.proofSteps
     .map(
@@ -402,8 +405,40 @@ function renderProofPanel(): string {
         </button>
       </p>
       <div role="status" aria-live="polite" class="proof-status">${status}</div>
+      ${selfCopyWarning}
       <p class="proof-size">${proofSummary()}</p>
     </div>
+  `;
+}
+
+function renderMalleability(): string {
+  if (!state.malleability) {
+    return '';
+  }
+  const dup = state.malleability.duplicate;
+  const prom = state.malleability.promote;
+  const row = (label: string, res: MalleabilityResult) => `
+    <div class="mall-case">
+      <h4>${label}</h4>
+      <p class="mono wrap"><span class="mall-lbl">root([a,b,c]):</span> ${res.rootThree}</p>
+      <p class="mono wrap"><span class="mall-lbl">root([a,b,c,c]):</span> ${res.rootFour}</p>
+      <p class="${res.collides ? 'proof-invalid' : 'proof-valid'}">
+        <span aria-hidden="true">${res.collides ? '❌' : '✅'}</span>
+        ${res.collides
+          ? 'Roots COLLIDE — appending a duplicate transaction leaves the Merkle root unchanged (CVE-2012-2459 malleability).'
+          : 'Roots DIFFER — the two leaf lists commit to distinct roots, so the malleability is fixed.'}
+      </p>
+    </div>`;
+  return `
+    <section class="panel mall-panel">
+      <h3>Odd-leaf malleability (CVE-2012-2459), demonstrated</h3>
+      <p>
+        These roots are computed live from real SHA-256. A three-item list and a four-item list whose
+        fourth item repeats the third are hashed under each convention:
+      </p>
+      ${row('Bitcoin — duplicate', dup)}
+      ${row('RFC 6962 — promote', prom)}
+    </section>
   `;
 }
 
@@ -434,10 +469,12 @@ function renderApp(): void {
     }
   }
 
-  const duplicateNote =
-    state.leaves.length % 2 === 1
-      ? '<p class="notice">Odd leaf count detected. The last leaf will be duplicated before hashing (Bitcoin convention).</p>'
-      : '<p class="notice">Even leaf count: no leaf duplication required at the first level.</p>';
+  const isOdd = state.leaves.length % 2 === 1;
+  const duplicateNote = isOdd
+    ? state.oddMode === 'promote'
+      ? '<p class="notice">Odd leaf count detected. The lone last node is <strong>promoted unchanged</strong> to the next level (RFC 6962). No duplication.</p>'
+      : '<p class="notice">Odd leaf count detected. The lone last node is <strong>hashed with a copy of itself</strong> (Bitcoin convention) — this is the CVE-2012-2459 pattern demonstrated below.</p>'
+    : '<p class="notice">Even leaf count: this level pairs cleanly, so the odd-node rule does not apply here.</p>';
 
   app!.innerHTML = `
     <main class="page" id="main" tabindex="-1">
@@ -498,6 +535,29 @@ function renderApp(): void {
             )
             .join('')}
         </div>
+        <fieldset class="mode-fieldset">
+          <legend>Odd-node convention</legend>
+          <div class="mode-row" role="radiogroup" aria-label="Odd-node convention">
+            <button
+              type="button"
+              class="mode-btn ${state.oddMode === 'promote' ? 'active' : ''}"
+              data-odd-mode="promote"
+              role="radio"
+              aria-checked="${state.oddMode === 'promote' ? 'true' : 'false'}"
+            >RFC 6962 — promote</button>
+            <button
+              type="button"
+              class="mode-btn ${state.oddMode === 'duplicate' ? 'active' : ''}"
+              data-odd-mode="duplicate"
+              role="radio"
+              aria-checked="${state.oddMode === 'duplicate' ? 'true' : 'false'}"
+            >Bitcoin — duplicate</button>
+          </div>
+          <p class="field-hint">
+            RFC 6962 (the default, matching Certificate Transparency) carries a lone node up unchanged.
+            Bitcoin hashes it with a copy of itself, which caused CVE-2012-2459. Switch modes and rebuild to compare.
+          </p>
+        </fieldset>
         <label for="leaf-input">Leaf data (one item per line, 2-16 leaves)</label>
         <textarea id="leaf-input" rows="8">${escapeHtml(state.textareaValue)}</textarea>
         <div class="meta-row">
@@ -527,6 +587,7 @@ function renderApp(): void {
               : ''
           }
         </section>
+        ${renderMalleability()}
       </section>
 
       <section class="panel" id="section-c">
@@ -651,6 +712,32 @@ function renderApp(): void {
     });
   });
 
+  document.querySelectorAll<HTMLButtonElement>('[data-odd-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = (btn.dataset.oddMode as OddMode) ?? 'promote';
+      if (mode === state.oddMode) {
+        return;
+      }
+      state.oddMode = mode;
+      // Rebuilding is required for the change to take effect; reset derived state.
+      state.tree = null;
+      state.originalTree = null;
+      state.proof = null;
+      state.proofSteps = [];
+      state.proofValid = null;
+      state.proofError = null;
+      state.tampered = false;
+      state.originalProofCheckAgainstTampered = null;
+      state.tamperedPathHashes = new Set<string>();
+      announce(
+        mode === 'promote'
+          ? 'RFC 6962 promote mode selected. Rebuild the tree to apply.'
+          : 'Bitcoin duplicate mode selected. Rebuild the tree to apply.',
+      );
+      renderApp();
+    });
+  });
+
   const leafInput = document.querySelector<HTMLTextAreaElement>('#leaf-input');
   leafInput?.addEventListener('input', (event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
@@ -668,7 +755,7 @@ function renderApp(): void {
       renderApp();
       return;
     }
-    state.tree = await buildMerkleTree(state.leaves);
+    state.tree = await buildMerkleTree(state.leaves, state.oddMode);
     announce(`Tree built with ${state.leaves.length} leaves and root ${state.tree.root.hash.slice(0, 12)}.`);
     state.originalTree = state.tree;
     state.selectedLeafIndex = Math.min(state.selectedLeafIndex, state.leaves.length - 1);
@@ -818,9 +905,33 @@ function renderApp(): void {
   }
 }
 
+/**
+ * Recompute the CVE-2012-2459 malleability demonstration for both odd-node
+ * conventions. Under Bitcoin 'duplicate', the leaf lists [a,b,c] and [a,b,c,c]
+ * hash to the SAME root — an attacker can append a duplicate transaction
+ * without changing the block's Merkle root. Under RFC 6962 'promote', they do
+ * NOT collide, so the malleability is fixed.
+ */
+async function computeMalleability(): Promise<Record<OddMode, MalleabilityResult>> {
+  const base = ['tx-a', 'tx-b', 'tx-c'];
+  const padded = ['tx-a', 'tx-b', 'tx-c', 'tx-c'];
+  const out = {} as Record<OddMode, MalleabilityResult>;
+  for (const mode of ['promote', 'duplicate'] as OddMode[]) {
+    const t3 = await buildMerkleTree(base, mode);
+    const t4 = await buildMerkleTree(padded, mode);
+    out[mode] = {
+      rootThree: t3.root.hash,
+      rootFour: t4.root.hash,
+      collides: t3.root.hash === t4.root.hash,
+    };
+  }
+  return out;
+}
+
 async function bootstrap(): Promise<void> {
-  state.tree = await buildMerkleTree(state.leaves);
+  state.tree = await buildMerkleTree(state.leaves, state.oddMode);
   state.originalTree = state.tree;
+  state.malleability = await computeMalleability();
   renderApp();
 }
 

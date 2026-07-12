@@ -501,6 +501,90 @@ textarea:focus-visible,
   gap: 0.5rem;
 }
 
+/* Odd-node convention selector */
+.mode-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  padding: 0.75rem 1rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.mode-fieldset legend {
+  padding: 0 0.4rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.mode-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.55rem 1rem;
+  min-height: 44px;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.mode-btn:hover {
+  border-color: var(--accent);
+}
+
+.mode-btn.active {
+  background: color-mix(in oklab, var(--accent), var(--surface) 65%);
+  border-color: var(--accent);
+}
+
+.mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Warning notice (odd-leaf duplication leak) */
+.notice-warn {
+  color: var(--invalid-text);
+  border: 1px solid color-mix(in oklab, var(--node-tampered), var(--surface) 55%);
+  background: color-mix(in oklab, var(--node-tampered), var(--surface) 85%);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0.6rem 0;
+}
+
+.sibling-selfcopy .proof-index {
+  color: var(--invalid-text);
+}
+
+/* Malleability demonstration panel */
+.mall-panel {
+  margin-top: 1rem;
+}
+
+.mall-case {
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.mall-case h4 {
+  margin: 0 0 0.4rem;
+}
+
+.mall-lbl {
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  margin-right: 0.35rem;
+}
+
 .copy-btn {
   border: 1px solid var(--border);
   border-radius: 0.5rem;
