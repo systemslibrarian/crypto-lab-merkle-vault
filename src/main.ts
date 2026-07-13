@@ -47,6 +47,13 @@ interface AppState {
   tamperedPathHashes: Set<string>;
   proofCalculatorN: number;
   malleability: Record<OddMode, MalleabilityResult> | null;
+  /**
+   * "Walk the proof" cursor. -1 = not walking (show the whole proof at once);
+   * 0..siblings.length = the level the learner has climbed to. At value k the
+   * running hash is proofSteps[k-1].result (or the raw leaf hash when k === 0),
+   * and the sibling about to be consumed is siblings[k].
+   */
+  walkStep: number;
 }
 
 const presets: Preset[] = [
@@ -117,6 +124,7 @@ const state: AppState = {
   tamperedPathHashes: new Set<string>(),
   proofCalculatorN: 1024,
   malleability: null,
+  walkStep: -1,
 };
 
 const announcer = document.querySelector<HTMLDivElement>('#sr-announcer');
@@ -236,6 +244,46 @@ function findPathToLeaf(node: MerkleNode, leafIndex: number): MerkleNode[] | nul
   return null;
 }
 
+/**
+ * For the currently selected leaf, walk the same path generateProof() walks and
+ * return, for each proof LEVEL (bottom-up), the sibling MerkleNode that is
+ * consumed at that level. Index 0 is the leaf's immediate sibling; the last
+ * entry is the sibling combined just below the root. Returns [] when no tree /
+ * no path. This mirrors generateProof exactly (promoted pass-through parents
+ * contribute no sibling and are skipped), so the visual highlight lines up
+ * one-to-one with the textual proof steps.
+ */
+function siblingNodesForSelectedLeaf(): MerkleNode[] {
+  if (!state.tree) {
+    return [];
+  }
+  const path = findPathToLeaf(state.tree.root, state.selectedLeafIndex);
+  if (!path) {
+    return [];
+  }
+  // path is root -> ... -> leaf. Walk it leaf-up, collecting the sibling of the
+  // child we came from at each real (non-promoted) internal node.
+  const siblings: MerkleNode[] = [];
+  for (let i = path.length - 1; i > 0; i -= 1) {
+    const child = path[i];
+    const parent = path[i - 1];
+    if (parent.isPromoted) {
+      continue; // pass-through: no sibling emitted, matches generateProof
+    }
+    const left = parent.left;
+    const right = parent.right;
+    if (!left || !right) {
+      continue;
+    }
+    if (left === child) {
+      siblings.push(right);
+    } else if (right === child) {
+      siblings.push(left);
+    }
+  }
+  return siblings;
+}
+
 function treeNodeClass(node: MerkleNode, depth: number, hiddenMobile: boolean): string {
   const classes = ['tree-node'];
   if (depth === 0) {
@@ -257,7 +305,19 @@ function treeNodeClass(node: MerkleNode, depth: number, hiddenMobile: boolean): 
   return classes.join(' ');
 }
 
+/**
+ * Edge list (parent DOM id -> its child DOM ids) for the last renderTree() call.
+ * drawTreeConnectors() reads this after layout to stroke SVG lines between each
+ * parent node and its children — turning the implied grid into a drawn tree.
+ */
+let treeEdges: Array<{ parent: string; child: string }> = [];
+
+/** Map from MerkleNode object -> the DOM id assigned to it in renderTree. */
+let nodeDomIds = new WeakMap<MerkleNode, string>();
+
 function renderTree(): string {
+  treeEdges = [];
+  nodeDomIds = new WeakMap<MerkleNode, string>();
   if (!state.tree) {
     return '<p class="panel-empty">Build a tree to visualize it.</p>';
   }
@@ -271,18 +331,81 @@ function renderTree(): string {
     }
   }
 
+  // Siblings consumed by the current proof, bottom-up (index 0 = leaf's sibling).
+  const siblingNodes = state.proof ? siblingNodesForSelectedLeaf() : [];
+  const siblingSet = new Set<MerkleNode>(siblingNodes);
+  // During a walk, siblingNodes[walkStep] is the sibling being pulled in right now.
+  const activeSibling =
+    state.walkStep >= 0 && state.walkStep < siblingNodes.length
+      ? siblingNodes[state.walkStep]
+      : null;
+  // Nodes on the climb path already reached (running-hash lineage). The climb has
+  // combined `walkStep` siblings, so the running hash currently sits at the parent
+  // that is `walkStep` levels above the leaf along the path.
+  const climbedNodes = new Set<MerkleNode>();
+  if (path && state.walkStep >= 0) {
+    // path is root..leaf; the leaf is last. Count non-promoted rises from the leaf.
+    let rises = 0;
+    let cursor = path.length - 1; // leaf
+    climbedNodes.add(path[cursor]);
+    while (cursor > 0 && rises < state.walkStep) {
+      const parent = path[cursor - 1];
+      cursor -= 1;
+      if (parent.isPromoted) {
+        continue;
+      }
+      rises += 1;
+      climbedNodes.add(parent);
+    }
+  }
+  const runningHashNode =
+    climbedNodes.size > 0 ? [...climbedNodes][climbedNodes.size - 1] : null;
+
+  // Assign DOM ids per node (depth + index within level) and remember them.
+  levels.forEach((nodes, depth) => {
+    nodes.forEach((node, idx) => {
+      nodeDomIds.set(node, `mn-${depth}-${idx}`);
+    });
+  });
+  // Build the parent->child edge list structurally.
+  for (let depth = 0; depth < levels.length - 1; depth += 1) {
+    for (const parent of levels[depth]) {
+      const pid = nodeDomIds.get(parent)!;
+      if (parent.isLeaf) {
+        continue; // carried-down leaf: no children below
+      }
+      if (parent.isPromoted && parent.left) {
+        const cid = nodeDomIds.get(parent.left);
+        if (cid) treeEdges.push({ parent: pid, child: cid });
+        continue;
+      }
+      for (const child of [parent.left, parent.right]) {
+        if (!child) continue;
+        const cid = nodeDomIds.get(child);
+        if (cid) treeEdges.push({ parent: pid, child: cid });
+      }
+    }
+  }
+
   return levels
     .map((nodes, depth) => {
       const html = nodes
         .map((node) => {
+          const domId = nodeDomIds.get(node)!;
           const isSelectableLeaf =
             node.isLeaf && !node.isDuplicated && node.leafIndex !== undefined;
           const isSelected =
             state.selectedLeafIndex === node.leafIndex && !node.isDuplicated;
+          const isSibling = siblingSet.has(node);
+          const isActiveSibling = activeSibling === node;
+          const onClimb = climbedNodes.has(node);
+          const isRunning = runningHashNode === node;
           const hiddenMobile =
             depth > 0 &&
             depth < levels.length - 1 &&
             !isSelected &&
+            !isSibling &&
+            !onClimb &&
             !pathHashes.has(node.hash);
           const isTampered = state.tamperedPathHashes.has(node.hash);
           const caption =
@@ -302,15 +425,40 @@ function renderTree(): string {
           const tamperBadge = isTampered
             ? '<span class="tree-flag" aria-hidden="true">⚠ tampered</span>'
             : '';
+          // Sibling / running-hash badges are icon+text, not color alone (1.4.1).
+          const roleBadge = isRunning
+            ? '<span class="tree-flag flag-running" aria-hidden="true">running hash</span>'
+            : isActiveSibling
+              ? '<span class="tree-flag flag-sibling" aria-hidden="true">sibling in →</span>'
+              : isSibling
+                ? '<span class="tree-flag flag-sibling-dim" aria-hidden="true">sibling</span>'
+                : '';
+
+          const roleClasses = [
+            isSibling ? 'node-sibling' : '',
+            isActiveSibling ? 'node-sibling-active' : '',
+            onClimb && state.walkStep >= 0 ? 'node-climbed' : '',
+            isRunning ? 'node-running' : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
 
           // Full hash and role exposed to assistive tech; the visible label is truncated.
-          const describe = `${caption}, hash ${node.hash}${isTampered ? ', tampered' : ''}`;
+          const srRole = isActiveSibling
+            ? ', sibling being combined at this step'
+            : isSibling
+              ? ', proof sibling'
+              : isRunning
+                ? ', current running hash'
+                : '';
+          const describe = `${caption}, hash ${node.hash}${srRole}${isTampered ? ', tampered' : ''}`;
 
           if (isSelectableLeaf) {
             const label = `Select ${caption} for proof. ${describe}`;
             return `<button
                 type="button"
-                class="${treeNodeClass(node, depth, hiddenMobile)}"
+                id="${domId}"
+                class="${treeNodeClass(node, depth, hiddenMobile)} ${roleClasses}"
                 data-leaf-index="${node.leafIndex}"
                 aria-pressed="${isSelected ? 'true' : 'false'}"
                 aria-label="${escapeHtml(label)}">
@@ -318,16 +466,19 @@ function renderTree(): string {
               <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
               ${leafData}
               ${tamperBadge}
+              ${roleBadge}
             </button>`;
           }
 
           return `<div
-              class="${treeNodeClass(node, depth, hiddenMobile)}"
+              id="${domId}"
+              class="${treeNodeClass(node, depth, hiddenMobile)} ${roleClasses}"
               role="group"
               aria-label="${escapeHtml(describe)}">
             <span class="tree-caption">${caption}</span>
             <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
             ${tamperBadge}
+            ${roleBadge}
           </div>`;
         })
         .join('');
@@ -337,6 +488,81 @@ function renderTree(): string {
       return `<div class="tree-level level-${depth}" role="group" aria-label="${levelLabel}">${html}</div>`;
     })
     .join('');
+}
+
+/**
+ * After the tree HTML is in the DOM and laid out, stroke SVG connector lines
+ * between each parent node and its children. This is a pure visual overlay
+ * (aria-hidden) redrawn on every render and on resize; it turns the column grid
+ * into an actually-drawn binary tree. Sibling/active edges are colored to match
+ * the node highlights so the eye can follow a sibling into its parent.
+ */
+function drawTreeConnectors(): void {
+  const shell = document.querySelector<HTMLElement>('#tree-view');
+  if (!shell || !state.tree) {
+    return;
+  }
+  const existing = shell.querySelector('svg.tree-connectors');
+  if (existing) existing.remove();
+  if (treeEdges.length === 0) return;
+
+  const shellRect = shell.getBoundingClientRect();
+  const width = shell.scrollWidth;
+  const height = shell.scrollHeight;
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'tree-connectors');
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('aria-hidden', 'true');
+
+  // Which child DOM ids are the active / any sibling, to color their in-edge.
+  const siblingNodes = state.proof ? siblingNodesForSelectedLeaf() : [];
+  const activeSibling =
+    state.walkStep >= 0 && state.walkStep < siblingNodes.length
+      ? siblingNodes[state.walkStep]
+      : null;
+  const siblingIds = new Set(
+    siblingNodes.map((n) => nodeDomIds.get(n)).filter(Boolean) as string[],
+  );
+  const activeId = activeSibling ? nodeDomIds.get(activeSibling) ?? null : null;
+
+  const center = (el: HTMLElement, edge: 'top' | 'bottom') => {
+    const r = el.getBoundingClientRect();
+    return {
+      x: r.left - shellRect.left + shell.scrollLeft + r.width / 2,
+      y:
+        (edge === 'top' ? r.top : r.bottom) -
+        shellRect.top +
+        shell.scrollTop,
+    };
+  };
+
+  for (const edge of treeEdges) {
+    const parentEl = document.getElementById(edge.parent);
+    const childEl = document.getElementById(edge.child);
+    if (!parentEl || !childEl) continue;
+    // Skip edges to mobile-hidden nodes (they have zero box).
+    if (childEl.offsetParent === null && childEl.getClientRects().length === 0) {
+      continue;
+    }
+    const p = center(parentEl, 'bottom');
+    const c = center(childEl, 'top');
+    const line = document.createElementNS(NS, 'path');
+    // A gentle vertical S-curve reads as a tree branch.
+    const midY = (p.y + c.y) / 2;
+    line.setAttribute(
+      'd',
+      `M ${p.x} ${p.y} C ${p.x} ${midY}, ${c.x} ${midY}, ${c.x} ${c.y}`,
+    );
+    let cls = 'connector';
+    if (edge.child === activeId) cls += ' connector-active';
+    else if (siblingIds.has(edge.child)) cls += ' connector-sibling';
+    line.setAttribute('class', cls);
+    svg.appendChild(line);
+  }
+  shell.prepend(svg);
 }
 
 function proofSummary(): string {
@@ -375,7 +601,11 @@ function renderProofPanel(): string {
       </p>`
     : '';
 
-  const steps = state.proofSteps
+  const totalSteps = state.proofSteps.length;
+  const walking = state.walkStep >= 0;
+  // In walk mode only reveal recomputation lines already climbed; otherwise all.
+  const visibleSteps = walking ? state.proofSteps.slice(0, state.walkStep) : state.proofSteps;
+  const steps = visibleSteps
     .map(
       (step) => `<li>
         <span class="proof-index">Step ${step.level}</span>
@@ -384,27 +614,88 @@ function renderProofPanel(): string {
     )
     .join('');
 
-  const status =
-    state.proofValid === true
-      ? '<p class="proof-valid"><span aria-hidden="true">✅</span> PROOF VALID</p>'
-      : '<p class="proof-invalid"><span aria-hidden="true">❌</span> PROOF INVALID</p>';
+  // The hash we have climbed to so far (byte-for-byte). Before any step it is the
+  // leaf hash; after step k it is proofSteps[k-1].result. This is real, recomputed
+  // from SHA-256 — never a stand-in for the committed root.
+  const climbedCount = walking ? state.walkStep : totalSteps;
+  const runningHash =
+    climbedCount === 0 ? state.proof.leafHash : state.proofSteps[climbedCount - 1].result;
+  const recomputedRoot = totalSteps === 0 ? state.proof.leafHash : state.proofSteps[totalSteps - 1].result;
+  const climbComplete = climbedCount >= totalSteps;
+
+  // "Walk the proof" step controls: advance one level at a time so the recursion
+  // is felt, not dumped. Buttons are only meaningful once there is >0 step.
+  const walkControls =
+    totalSteps === 0
+      ? '<p class="field-hint">This leaf is the root — a single-leaf tree needs no sibling steps.</p>'
+      : `
+      <div class="walk-controls" role="group" aria-label="Walk the proof one level at a time">
+        <button type="button" id="walk-start" class="secondary walk-btn">${walking ? 'Restart walk' : 'Walk the proof ▸'}</button>
+        <button type="button" id="walk-next" class="primary walk-btn" ${walking && !climbComplete ? '' : 'disabled'}>Next level ▸</button>
+        <button type="button" id="walk-all" class="secondary walk-btn" ${walking && climbComplete ? 'disabled' : ''}>Show all at once</button>
+        <span class="walk-progress" aria-hidden="true">${walking ? `Level ${climbedCount} / ${totalSteps}` : `${totalSteps} levels`}</span>
+      </div>
+      ${
+        walking
+          ? `<div class="walk-readout" role="status" aria-live="polite">
+              <p class="walk-line"><span class="walk-lbl">Running hash</span> <span class="mono wrap">${runningHash}</span></p>
+              ${
+                climbComplete
+                  ? `<p class="walk-line walk-done"><span aria-hidden="true">▲</span> Reached the top — the running hash below is the recomputed root.</p>`
+                  : `<p class="walk-line"><span class="walk-lbl">Next: pull sibling (${state.proof.siblings[state.walkStep].position})</span> <span class="mono wrap">${state.proof.siblings[state.walkStep].hash}</span></p>
+                     <p class="walk-line"><span class="walk-lbl">Combine →</span> <span class="mono wrap">${state.proofSteps[state.walkStep].result}</span></p>`
+              }
+            </div>`
+          : ''
+      }`;
+
+  // Verification as a visible byte-equality assertion (not just a VALID banner).
+  // Only assert once the climb reaches the top. Highlighted node ids in the tree
+  // let the learner SEE the two strings are the same before the color turns green.
+  // Compare against the tree's LIVE committed root: after a tamper the leaf's
+  // recomputed root no longer matches, so the panel honestly turns red.
+  const committedRoot = state.tree.root.hash;
+  const rootsMatch = recomputedRoot === committedRoot;
+  const equalityPanel = climbComplete
+    ? `<div class="equality proof-status ${rootsMatch ? 'equality-match' : 'equality-mismatch'}" role="status" aria-live="polite">
+        <div class="eq-row">
+          <span class="eq-lbl">Recomputed root (climbed from the leaf)</span>
+          <span class="mono wrap eq-hash">${recomputedRoot}</span>
+        </div>
+        <div class="eq-op" aria-hidden="true">${rootsMatch ? '=' : '≠'}</div>
+        <div class="eq-row">
+          <span class="eq-lbl">Committed root (the tree's published commitment)</span>
+          <span class="mono wrap eq-hash">${committedRoot}</span>
+        </div>
+        <p class="eq-verdict">
+          <span aria-hidden="true">${rootsMatch ? '✅' : '❌'}</span>
+          ${
+            rootsMatch
+              ? 'Byte-for-byte identical — the leaf is proven to be in the committed tree.'
+              : 'The two roots differ — this leaf is NOT in the committed tree (the leaf or a sibling was tampered).'
+          }
+        </p>
+      </div>`
+    : `<p class="field-hint">Finish the walk (or “Show all at once”) to compare the recomputed root against the committed root.</p>`;
 
   return `
     <div class="proof-block">
+      <p class="proof-gloss"><strong>Inclusion proof, in one line:</strong> prove this one item is in the set without sending the whole set — just this leaf plus one sibling hash per level (O(log n) of them).</p>
       <p><strong>Leaf hash:</strong></p>
       <p class="mono wrap">${state.proof.leafHash}</p>
-      <p><strong>Siblings:</strong></p>
+      <p><strong>Siblings (one per level, ${state.proof.siblings.length} total):</strong></p>
       <ol class="proof-list">${siblings}</ol>
-      <p><strong>Root recomputation:</strong></p>
-      <ol class="proof-list">${steps}</ol>
+      ${walkControls}
+      <p><strong>Root recomputation${walking ? ` (level ${climbedCount} / ${totalSteps})` : ''}:</strong></p>
+      <ol class="proof-list">${steps || '<li class="field-hint">Press “Next level” to climb the first step.</li>'}</ol>
+      ${equalityPanel}
       <p class="root-row">
-        <strong>Expected root:</strong>
-        <span class="mono wrap" id="root-hash">${state.proof.root}</span>
-        <button type="button" class="copy-btn" data-copy="${state.proof.root}" aria-label="Copy root hash to clipboard">
+        <strong>Committed root:</strong>
+        <span class="mono wrap" id="root-hash">${committedRoot}</span>
+        <button type="button" class="copy-btn" data-copy="${committedRoot}" aria-label="Copy root hash to clipboard">
           <span aria-hidden="true">Copy</span>
         </button>
       </p>
-      <div role="status" aria-live="polite" class="proof-status">${status}</div>
       ${selfCopyWarning}
       <p class="proof-size">${proofSummary()}</p>
     </div>
@@ -476,6 +767,10 @@ function renderApp(): void {
       : '<p class="notice">Odd leaf count detected. The lone last node is <strong>hashed with a copy of itself</strong> (Bitcoin convention) — this is the CVE-2012-2459 pattern demonstrated below.</p>'
     : '<p class="notice">Even leaf count: this level pairs cleanly, so the odd-node rule does not apply here.</p>';
 
+  // The selected odd-node mode only takes effect on the NEXT build. Flag the gap
+  // so a first-timer knows a mode switch needs a rebuild (a real workflow trap).
+  const rebuildNeeded = state.tree !== null && state.tree.oddMode !== state.oddMode;
+
   app!.innerHTML = `
     <main class="page" id="main" tabindex="-1">
       <header class="cl-hero">
@@ -505,6 +800,7 @@ function renderApp(): void {
           </article>
           <article>
             <h3>A3 - Inclusion Proofs</h3>
+            <p><strong>In plain terms:</strong> prove one item is in the set without sending the whole set.</p>
             <p>A proof includes the target leaf hash and one sibling hash per level. The verifier recomputes up to root.</p>
             <p>Proof size is <span class="mono">O(log n)</span>; for 1 million leaves, only 20 hashes are needed.</p>
           </article>
@@ -536,34 +832,12 @@ function renderApp(): void {
             )
             .join('')}
         </div>
-        <fieldset class="mode-fieldset">
-          <legend>Odd-node convention</legend>
-          <div class="mode-row" role="radiogroup" aria-label="Odd-node convention">
-            <button
-              type="button"
-              class="mode-btn ${state.oddMode === 'promote' ? 'active' : ''}"
-              data-odd-mode="promote"
-              role="radio"
-              aria-checked="${state.oddMode === 'promote' ? 'true' : 'false'}"
-            >RFC 6962 — promote</button>
-            <button
-              type="button"
-              class="mode-btn ${state.oddMode === 'duplicate' ? 'active' : ''}"
-              data-odd-mode="duplicate"
-              role="radio"
-              aria-checked="${state.oddMode === 'duplicate' ? 'true' : 'false'}"
-            >Bitcoin — duplicate</button>
-          </div>
-          <p class="field-hint">
-            RFC 6962 (the default, matching Certificate Transparency) carries a lone node up unchanged.
-            Bitcoin hashes it with a copy of itself, which caused CVE-2012-2459. Switch modes and rebuild to compare.
-          </p>
-        </fieldset>
+        <p class="section-lede">The core loop: <strong>build</strong> a tree, <strong>select</strong> a leaf, <strong>generate</strong> its proof, then <strong>tamper</strong> a leaf and watch the proof break. (Odd-leaf conventions and the CVE-2012-2459 malleability bug live in <em>Advanced</em>, below.)</p>
         <label for="leaf-input">Leaf data (one item per line, 2-16 leaves)</label>
         <textarea id="leaf-input" rows="8">${escapeHtml(state.textareaValue)}</textarea>
         <div class="meta-row">
           <p>Leaf count: <strong>${state.leaves.length}</strong></p>
-          ${duplicateNote}
+          <p>Mode: <strong>${state.oddMode === 'promote' ? 'RFC 6962 — promote' : 'Bitcoin — duplicate'}</strong>${rebuildNeeded ? ' <span class="rebuild-flag">⟳ rebuild to apply</span>' : ''}</p>
         </div>
         ${state.proofError ? `<p class="proof-invalid">${state.proofError}</p>` : ''}
         <div class="action-row">
@@ -588,7 +862,41 @@ function renderApp(): void {
               : ''
           }
         </section>
-        ${renderMalleability()}
+
+        <details class="advanced" id="advanced-odd"${state.oddMode === 'duplicate' || state.tampered ? ' open' : ''}>
+          <summary>
+            <span class="adv-title">Advanced — odd-leaf conventions &amp; the CVE-2012-2459 malleability bug</span>
+            <span class="adv-hint">optional deep dive · safe to skip on a first read</span>
+          </summary>
+          <div class="advanced-body">
+            <fieldset class="mode-fieldset">
+              <legend>Odd-node convention</legend>
+              <div class="mode-row" role="radiogroup" aria-label="Odd-node convention">
+                <button
+                  type="button"
+                  class="mode-btn ${state.oddMode === 'promote' ? 'active' : ''}"
+                  data-odd-mode="promote"
+                  role="radio"
+                  aria-checked="${state.oddMode === 'promote' ? 'true' : 'false'}"
+                >RFC 6962 — promote</button>
+                <button
+                  type="button"
+                  class="mode-btn ${state.oddMode === 'duplicate' ? 'active' : ''}"
+                  data-odd-mode="duplicate"
+                  role="radio"
+                  aria-checked="${state.oddMode === 'duplicate' ? 'true' : 'false'}"
+                >Bitcoin — duplicate</button>
+              </div>
+              <p class="field-hint">
+                RFC 6962 (the default, matching Certificate Transparency) carries a lone node up unchanged.
+                Bitcoin hashes it with a copy of itself, which caused CVE-2012-2459.
+                <strong>Changing the mode does not take effect until you rebuild the tree</strong> — press Build Tree above after switching.
+              </p>
+              ${duplicateNote}
+            </fieldset>
+            ${renderMalleability()}
+          </div>
+        </details>
       </section>
 
       <section class="panel" id="section-c">
@@ -708,6 +1016,8 @@ function renderApp(): void {
       state.tampered = false;
       state.originalProofCheckAgainstTampered = null;
       state.tamperedPathHashes = new Set<string>();
+    state.walkStep = -1;
+      state.walkStep = -1;
       announce(`${preset.label} preset loaded with ${preset.items.length} leaves.`);
       renderApp();
     });
@@ -730,6 +1040,8 @@ function renderApp(): void {
       state.tampered = false;
       state.originalProofCheckAgainstTampered = null;
       state.tamperedPathHashes = new Set<string>();
+    state.walkStep = -1;
+      state.walkStep = -1;
       announce(
         mode === 'promote'
           ? 'RFC 6962 promote mode selected. Rebuild the tree to apply.'
@@ -767,6 +1079,7 @@ function renderApp(): void {
     state.tampered = false;
     state.originalProofCheckAgainstTampered = null;
     state.tamperedPathHashes = new Set<string>();
+    state.walkStep = -1;
     renderApp();
   });
 
@@ -782,11 +1095,45 @@ function renderApp(): void {
     state.proofSteps = await computeProofSteps(state.proof);
     state.proofValid = await verifyProof(state.proof);
     state.proofError = null;
+    state.walkStep = -1; // show the whole proof; learner can start the walk next
     announce(
       `Proof generated for leaf ${state.selectedLeafIndex} with ${state.proof.siblings.length} sibling hashes. Proof is ${state.proofValid ? 'valid' : 'invalid'}.`,
     );
     renderApp();
     scrollIntoViewIfNeeded('.proof-panel');
+  });
+
+  // "Walk the proof": step through one level at a time so the recursion is felt.
+  document.querySelector<HTMLButtonElement>('#walk-start')?.addEventListener('click', () => {
+    if (!state.proof) return;
+    state.walkStep = 0;
+    announce(
+      `Walking the proof. Starting at the leaf hash. ${state.proofSteps.length} levels to climb.`,
+    );
+    renderApp();
+    scrollIntoViewIfNeeded('.walk-readout');
+  });
+
+  document.querySelector<HTMLButtonElement>('#walk-next')?.addEventListener('click', () => {
+    if (!state.proof) return;
+    if (state.walkStep < state.proofSteps.length) {
+      const combined = state.proofSteps[state.walkStep];
+      state.walkStep += 1;
+      const atTop = state.walkStep >= state.proofSteps.length;
+      announce(
+        atTop
+          ? `Reached the top. Recomputed root ${combined.result.slice(0, 12)}.`
+          : `Level ${state.walkStep}: combined with the sibling to get ${combined.result.slice(0, 12)}.`,
+      );
+      renderApp();
+    }
+  });
+
+  document.querySelector<HTMLButtonElement>('#walk-all')?.addEventListener('click', () => {
+    if (!state.proof) return;
+    state.walkStep = -1; // reveal every level at once
+    announce('Showing all proof levels at once.');
+    renderApp();
   });
 
   const tamperButton = document.querySelector<HTMLButtonElement>('#tamper-leaf');
@@ -845,6 +1192,7 @@ function renderApp(): void {
     state.proofError = null;
     state.originalProofCheckAgainstTampered = null;
     state.tamperedPathHashes = new Set<string>();
+    state.walkStep = -1;
     announce('Original data restored. The tree is back to its untampered state.');
     renderApp();
   });
@@ -852,8 +1200,17 @@ function renderApp(): void {
   document.querySelectorAll<HTMLButtonElement>('[data-leaf-index]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const value = Number.parseInt(btn.dataset.leafIndex ?? '0', 10);
+      const changed = value !== state.selectedLeafIndex;
       state.selectedLeafIndex = value;
-      announce(`Leaf ${value} selected as proof target.`);
+      if (changed) {
+        // The old proof was for a different leaf; clear it so the tree highlight
+        // and the proof panel stay in sync. The learner regenerates for this leaf.
+        state.proof = null;
+        state.proofSteps = [];
+        state.proofValid = null;
+        state.walkStep = -1;
+      }
+      announce(`Leaf ${value} selected as proof target. Generate a proof to see its path.`);
       renderApp();
     });
   });
@@ -904,7 +1261,22 @@ function renderApp(): void {
       }
     }
   }
+
+  // Draw parent→child connector lines once the new tree HTML is laid out. Two
+  // rAFs so grid layout + any font metrics have settled before we measure boxes.
+  requestAnimationFrame(() => requestAnimationFrame(() => drawTreeConnectors()));
 }
+
+// Redraw connectors when the viewport reflows (columns can shift width/wrap).
+let connectorResizeQueued = false;
+window.addEventListener('resize', () => {
+  if (connectorResizeQueued) return;
+  connectorResizeQueued = true;
+  requestAnimationFrame(() => {
+    connectorResizeQueued = false;
+    drawTreeConnectors();
+  });
+});
 
 /**
  * Recompute the CVE-2012-2459 malleability demonstration for both odd-node

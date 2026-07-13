@@ -56,6 +56,17 @@ async function exerciseApp(page: Page): Promise<void> {
   await page.locator('[data-leaf-index="1"]').first().click();
   await page.locator('#generate-proof').click();
   await expect(page.locator('.proof-status')).toBeVisible();
+  // Enter "walk the proof" mode and advance one level so the walk readout,
+  // running-hash / active-sibling node highlights, and step-mode UI are scanned.
+  await page.locator('#walk-start').click();
+  await expect(page.locator('.walk-readout')).toBeVisible();
+  await page.locator('#walk-next').click();
+  // Reveal all levels again so the completed equality panel is present too.
+  await page.locator('#walk-all').click();
+  await expect(page.locator('.equality')).toBeVisible();
+  // Open the gated Advanced subsection (odd-node selector + malleability panel).
+  await page.locator('#advanced-odd > summary').click();
+  await expect(page.locator('.mall-panel')).toBeVisible();
   // Tamper to render the tampered-node / invalid-proof output.
   await page.locator('#tamper-leaf').click();
   await revealEverything(page);

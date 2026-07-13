@@ -19,6 +19,14 @@
   --node-root: #4f6f9f;
   --node-leaf: #38584e;
   --node-internal: #5d4a2f;
+  /* Proof-walk highlights. --sibling is the amber pull-in color; --running is a
+     cyan-teal for the climbing hash so the two roles read as distinct hues (not
+     just brightness). Text inks (-ink) run bright enough for >=4.5:1 on surface. */
+  --sibling: #d98b2b;
+  --sibling-ink: #f0a94a;
+  --running: #2fa6b8;
+  --running-ink: #57cfe0;
+  --connector: #7d7461;
   --font-body: 'IBM Plex Sans', 'Source Sans 3', sans-serif;
   --font-display: 'Fraunces', 'Iowan Old Style', serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Mono', monospace;
@@ -45,6 +53,12 @@
   --node-root: #37699a;
   --node-leaf: #4f7e70;
   --node-internal: #8f6c39;
+  /* Darker highlight inks for the light surfaces (>=4.5:1 on --surface). */
+  --sibling: #a5641a;
+  --sibling-ink: #8a5310;
+  --running: #0f7d8c;
+  --running-ink: #0a6675;
+  --connector: #9a9078;
 }
 
 html,
@@ -154,7 +168,44 @@ textarea {
   overflow-x: auto;
 }
 
+/* The live tree is the positioning context for the SVG connector overlay. */
+.tree-shell {
+  position: relative;
+}
+
+/* SVG connector overlay: sits behind the node boxes (which have solid fills) so
+   the branch lines appear to run into each node. Never intercepts pointer/tab. */
+svg.tree-connectors {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tree-connectors .connector {
+  fill: none;
+  stroke: var(--connector);
+  stroke-width: 2;
+  opacity: 0.75;
+}
+
+.tree-connectors .connector-sibling {
+  stroke: var(--sibling);
+  stroke-width: 2.5;
+  opacity: 1;
+}
+
+.tree-connectors .connector-active {
+  stroke: var(--sibling);
+  stroke-width: 3.5;
+  opacity: 1;
+}
+
+/* Node boxes sit above the connector overlay. */
 .tree-level {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-auto-flow: column;
   justify-content: center;
@@ -221,6 +272,60 @@ button.tree-node {
 
 .selected-node {
   outline: 2px solid var(--accent);
+}
+
+/* Proof-walk node roles. Each is distinguished by outline + a text badge, so the
+   role never rests on color alone (WCAG 1.4.1). */
+.node-sibling {
+  outline: 2px solid var(--sibling);
+}
+
+.node-sibling-active {
+  outline: 3px solid var(--sibling);
+  background: color-mix(in oklab, var(--sibling), var(--surface) 78%);
+}
+
+.node-running {
+  outline: 3px solid var(--running);
+  background: color-mix(in oklab, var(--running), var(--surface) 80%);
+}
+
+.node-climbed:not(.node-running) {
+  outline: 2px dashed var(--running);
+}
+
+/* Brief pulse when a sibling becomes the active one during the walk. */
+.node-sibling-active {
+  animation: sibling-pull 0.45s ease;
+}
+
+@keyframes sibling-pull {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Fixed dark, opaque badge fills with white ink so they clear 4.5:1 in BOTH
+   themes (theme-tinted vars can't satisfy both, like the tamper badge). */
+.flag-sibling {
+  color: #ffffff;
+  background-color: #8a5310;
+}
+
+.flag-sibling-dim {
+  color: #ffffff;
+  background-color: #6b451c;
+}
+
+.flag-running {
+  color: #ffffff;
+  background-color: #0a6675;
 }
 
 .caption,
@@ -563,6 +668,226 @@ textarea:focus-visible,
 
 .proof-status {
   margin-top: 0.4rem;
+}
+
+/* --- Section lede + plain-language gloss --- */
+.section-lede {
+  margin: 0 0 0.4rem;
+  color: var(--text);
+}
+
+.proof-gloss {
+  margin: 0 0 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 7%, transparent);
+  border-radius: 0 0.5rem 0.5rem 0;
+  color: var(--text);
+}
+
+/* --- "Rebuild to apply" flag next to the mode readout --- */
+.rebuild-flag {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ffffff;
+  /* Fixed dark amber so white ink clears 4.5:1 in both themes. */
+  background-color: #8a5310;
+}
+
+/* --- Walk-the-proof controls --- */
+.walk-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.3rem;
+}
+
+.walk-btn {
+  min-height: 40px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+.walk-progress {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+}
+
+.walk-readout {
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--running);
+  border-radius: 0 0.6rem 0.6rem 0;
+  background: color-mix(in oklab, var(--running) 6%, transparent);
+  display: grid;
+  gap: 0.3rem;
+}
+
+.walk-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.walk-lbl {
+  display: inline-block;
+  min-width: 12ch;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--running-ink);
+}
+
+.walk-done {
+  color: var(--valid-text);
+  font-weight: 700;
+}
+
+/* --- Root-equality assertion (recomputed vs committed) --- */
+.equality {
+  margin: 0.7rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  display: grid;
+  gap: 0.35rem;
+  transition:
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+.equality-match {
+  border-color: var(--node-valid);
+  background: color-mix(in oklab, var(--node-valid) 12%, transparent);
+  animation: eq-merge 0.5s ease;
+}
+
+.equality-mismatch {
+  border-color: var(--node-tampered);
+  background: color-mix(in oklab, var(--node-tampered) 12%, transparent);
+}
+
+@keyframes eq-merge {
+  0% {
+    transform: scale(0.99);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.eq-row {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.eq-lbl {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.equality-match .eq-hash {
+  color: var(--valid-text);
+  font-weight: 600;
+}
+
+.equality-mismatch .eq-hash {
+  color: var(--invalid-text);
+  font-weight: 600;
+}
+
+.eq-op {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1;
+}
+
+.equality-match .eq-op {
+  color: var(--valid-text);
+}
+
+.equality-mismatch .eq-op {
+  color: var(--invalid-text);
+}
+
+.eq-verdict {
+  margin: 0.25rem 0 0;
+  font-weight: 700;
+}
+
+.equality-match .eq-verdict {
+  color: var(--valid-text);
+}
+
+.equality-mismatch .eq-verdict {
+  color: var(--invalid-text);
+}
+
+/* --- Advanced (gated) subsection --- */
+.advanced {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.advanced > summary {
+  cursor: pointer;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+  list-style: none;
+  background: var(--surface-alt);
+}
+
+.advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--accent);
+  font-size: 0.9rem;
+  transition: transform 0.18s ease;
+}
+
+.advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.advanced > summary:focus-visible {
+  outline: 3px solid var(--accent-hover);
+  outline-offset: -3px;
+}
+
+.adv-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.adv-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.advanced-body {
+  padding: 0.5rem 1rem 1rem;
+  display: grid;
+  gap: 0.6rem;
 }
 
 /* ---------------------------------------------------------------------------
