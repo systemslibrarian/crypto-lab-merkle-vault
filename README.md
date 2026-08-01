@@ -36,10 +36,10 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 
 ## Real-World Usage
 
-- Git object model: every Git commit contains the SHA-256 (or SHA-1) root of a tree object that hashes all files and subdirectories, making the entire repository history tamper-evident.
+- Git object model: a commit object references a tree object by hash, and each tree references its subtrees and blobs by hash, forming a Merkle DAG over the directory structure rather than a balanced binary tree. Changing one file changes every hash above it, making the entire repository history tamper-evident. The default object hash is still SHA-1 (hardened against SHAttered since v2.13); SHA-256 is available as an opt-in repository format.
 - Bitcoin SPV: lightweight Bitcoin clients verify transaction inclusion using Merkle proofs against the block header's Merkle root, downloading only 80-byte headers rather than full blocks.
 - Certificate Transparency (RFC 6962): publicly trusted TLS certificates are logged in append-only Merkle logs; Chrome and Safari require Signed Certificate Timestamps (a log's signed promise to include the certificate) at connection time, and auditors later check the corresponding Merkle inclusion proofs against the log's signed tree head.
-- Package managers: npm, Yarn, and Cargo use hash trees to verify package integrity - a package manifest commits to all file hashes, and the package registry signs the root.
+- Package managers, as a contrast: npm, Yarn, and Cargo do *not* build Merkle trees. They pin a flat, independent hash per artifact - npm and Yarn record a Subresource-Integrity `integrity` string (normally sha512) for each tarball in `package-lock.json` / `yarn.lock`, and Cargo records a sha256 `checksum` per package in `Cargo.lock`. That detects a tampered download, but there is no root and no O(log n) inclusion proof: verifying one package means holding a hash for every package. The tree structure in this demo is exactly what buys you the logarithmic proof.
 - Ethereum state trie: Ethereum's Patricia-Merkle trie commits to the entire world state (all account balances and contract storage) in each block header.
 
 ## How to Run Locally
