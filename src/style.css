@@ -505,6 +505,13 @@ th {
   top: 0.75rem;
 }
 
+/* The dark theme's --accent (#c99b45) is a light gold; #fff on it is only
+   2.54:1, failing WCAG 1.4.3. Near-black text on the same fill is 7.29:1.
+   The light --accent (#896015) is dark enough that #fff clears at 5.60:1. */
+[data-theme='dark'] .skip-link {
+  color: #1a1206;
+}
+
 /* A single, consistent, high-contrast focus indicator for every interactive
    element. :focus-visible keeps it from showing on mouse clicks. */
 a:focus-visible,
