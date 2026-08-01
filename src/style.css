@@ -7,6 +7,8 @@
   --accent: #c99b45;
   --accent-hover: #e2bb6f;
   --border: #5b5f53;
+  /* Text-entry boundary; decorative rules continue to use --border. */
+  --border-strong: #7f8274;
   --code-bg: #151613;
   --node-valid: #3e9a61;
   --node-tampered: #af3c47;
@@ -42,6 +44,7 @@
   --accent: #896015;
   --accent-hover: #6d4a09;
   --border: #a79d89;
+  --border-strong: #817662;
   --code-bg: #e2d8c6;
   --node-valid: #2e7f4f;
   --node-tampered: #a12832;
@@ -400,7 +403,7 @@ button.tree-node {
 textarea,
 input {
   width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 0.6rem;
   background: var(--code-bg);
   color: var(--text);
