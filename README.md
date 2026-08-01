@@ -38,7 +38,7 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 
 - Git object model: every Git commit contains the SHA-256 (or SHA-1) root of a tree object that hashes all files and subdirectories, making the entire repository history tamper-evident.
 - Bitcoin SPV: lightweight Bitcoin clients verify transaction inclusion using Merkle proofs against the block header's Merkle root, downloading only 80-byte headers rather than full blocks.
-- Certificate Transparency (RFC 6962): all TLS certificates must be logged in public Merkle logs; Chrome and Safari require valid CT inclusion proofs before trusting any certificate.
+- Certificate Transparency (RFC 6962): publicly trusted TLS certificates are logged in append-only Merkle logs; Chrome and Safari require Signed Certificate Timestamps (a log's signed promise to include the certificate) at connection time, and auditors later check the corresponding Merkle inclusion proofs against the log's signed tree head.
 - Package managers: npm, Yarn, and Cargo use hash trees to verify package integrity - a package manifest commits to all file hashes, and the package registry signs the root.
 - Ethereum state trie: Ethereum's Patricia-Merkle trie commits to the entire world state (all account balances and contract storage) in each block header.
 
@@ -62,5 +62,7 @@ npm run test:a11y  # WCAG A/AA accessibility gate (axe-core)
 - [crypto-lab-collision-vault](https://systemslibrarian.github.io/crypto-lab-collision-vault/) - what happens when the underlying hash's collision resistance fails.
 
 ---
+
+*One of 170+ browser demos in the [Crypto Lab](https://crypto-lab.systemslibrarian.dev/) suite.*
 
 *"So whether you eat or drink or whatever you do, do it all for the glory of God." — 1 Corinthians 10:31*
