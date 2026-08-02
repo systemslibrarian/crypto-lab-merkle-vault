@@ -47,6 +47,8 @@ export interface MerkleTree {
   depth: number;
   leafCount: number;
   oddMode: OddMode;
+  /** RFC 6962 0x00/0x01 prefixes in use. False only in the attack exhibit. */
+  domainSeparation: boolean;
 }
 
 export interface ProofStep {
@@ -69,12 +71,15 @@ export interface InclusionProof {
   oddMode: OddMode;
   /** True if any step in the proof is a self-copy sibling (see ProofStep). */
   usesDuplicatedSibling: boolean;
+  /** The hashing convention the verifier must replay. Defaults to RFC 6962. */
+  domainSeparation: boolean;
 }
 
 interface TreeMetadata {
   parents: WeakMap<MerkleNode, MerkleNode | null>;
   originalLeaves: string[];
   oddMode: OddMode;
+  domainSeparation: boolean;
 }
 
 /** RFC 6962 §2.1: the Merkle Tree Hash of the empty list is SHA-256(""). */
@@ -112,19 +117,39 @@ async function sha256hex(data: Uint8Array): Promise<string> {
     .join('');
 }
 
-export async function hashLeaf(data: string): Promise<string> {
-  const payload = new TextEncoder().encode(data);
-  const prefixed = concatBytes(new Uint8Array([0x00]), payload);
-  return sha256hex(prefixed);
+/**
+ * Domain separation is a parameter, not a constant, so the second-preimage
+ * attack can be MOUNTED rather than described: the identical tree, proof, and
+ * verification code runs with the 0x00 / 0x01 prefixes and without them, and
+ * the forgery succeeds in one case and fails in the other. `true` (RFC 6962) is
+ * the default on every entry point, so nothing reaches the unsafe hashing
+ * unless a caller explicitly asks for it.
+ */
+export type DomainSeparation = boolean;
+
+export async function hashLeafBytes(
+  data: Uint8Array,
+  domainSeparation: DomainSeparation = true,
+): Promise<string> {
+  return sha256hex(domainSeparation ? concatBytes(new Uint8Array([0x00]), data) : data);
 }
 
-export async function hashInternal(leftHex: string, rightHex: string): Promise<string> {
-  const prefixed = concatBytes(
-    new Uint8Array([0x01]),
-    hexToBytes(leftHex),
-    hexToBytes(rightHex),
+export async function hashLeaf(
+  data: string,
+  domainSeparation: DomainSeparation = true,
+): Promise<string> {
+  return hashLeafBytes(new TextEncoder().encode(data), domainSeparation);
+}
+
+export async function hashInternal(
+  leftHex: string,
+  rightHex: string,
+  domainSeparation: DomainSeparation = true,
+): Promise<string> {
+  const children = concatBytes(hexToBytes(leftHex), hexToBytes(rightHex));
+  return sha256hex(
+    domainSeparation ? concatBytes(new Uint8Array([0x01]), children) : children,
   );
-  return sha256hex(prefixed);
 }
 
 function getTreeMetadata(tree: MerkleTree): TreeMetadata {
@@ -145,19 +170,20 @@ function getTreeMetadata(tree: MerkleTree): TreeMetadata {
 export async function buildMerkleTree(
   leaves: string[],
   oddMode: OddMode = 'promote',
+  domainSeparation: DomainSeparation = true,
 ): Promise<MerkleTree> {
   const parents = new WeakMap<MerkleNode, MerkleNode | null>();
 
   if (leaves.length === 0) {
     const root: MerkleNode = { hash: EMPTY_TREE_ROOT, isLeaf: false };
     parents.set(root, null);
-    metadataByRoot.set(root, { parents, originalLeaves: [], oddMode });
-    return { root, leaves: [], depth: 0, leafCount: 0, oddMode };
+    metadataByRoot.set(root, { parents, originalLeaves: [], oddMode, domainSeparation });
+    return { root, leaves: [], depth: 0, leafCount: 0, oddMode, domainSeparation };
   }
 
   const hashedLeaves: MerkleNode[] = await Promise.all(
     leaves.map(async (leafData, index) => ({
-      hash: await hashLeaf(leafData),
+      hash: await hashLeaf(leafData, domainSeparation),
       isLeaf: true,
       leafIndex: index,
     })),
@@ -198,7 +224,7 @@ export async function buildMerkleTree(
         : { ...left, isDuplicated: true };
 
       const parent: MerkleNode = {
-        hash: await hashInternal(left.hash, right.hash),
+        hash: await hashInternal(left.hash, right.hash, domainSeparation),
         left,
         right,
         isLeaf: false,
@@ -219,9 +245,17 @@ export async function buildMerkleTree(
     parents,
     originalLeaves: leaves.slice(),
     oddMode,
+    domainSeparation,
   });
 
-  return { root, leaves: hashedLeaves, depth, leafCount: leaves.length, oddMode };
+  return {
+    root,
+    leaves: hashedLeaves,
+    depth,
+    leafCount: leaves.length,
+    oddMode,
+    domainSeparation,
+  };
 }
 
 export async function generateProof(
@@ -279,21 +313,28 @@ export async function generateProof(
     root: tree.root.hash,
     oddMode: tree.oddMode,
     usesDuplicatedSibling: siblings.some((s) => s.isSelfCopy),
+    domainSeparation: tree.domainSeparation,
   };
 }
 
-export async function verifyProof(proof: InclusionProof): Promise<boolean> {
+/** Replay a proof's climb, returning the root it actually reconstructs. */
+export async function recomputeRoot(proof: InclusionProof): Promise<string> {
+  const ds = proof.domainSeparation ?? true;
   let currentHash = proof.leafHash;
 
   for (const sibling of proof.siblings) {
     if (sibling.position === 'left') {
-      currentHash = await hashInternal(sibling.hash, currentHash);
+      currentHash = await hashInternal(sibling.hash, currentHash, ds);
     } else {
-      currentHash = await hashInternal(currentHash, sibling.hash);
+      currentHash = await hashInternal(currentHash, sibling.hash, ds);
     }
   }
 
-  return currentHash === proof.root;
+  return currentHash;
+}
+
+export async function verifyProof(proof: InclusionProof): Promise<boolean> {
+  return (await recomputeRoot(proof)) === proof.root;
 }
 
 export async function tamperLeaf(
@@ -308,5 +349,95 @@ export async function tamperLeaf(
   const metadata = getTreeMetadata(tree);
   const nextLeaves = metadata.originalLeaves.slice();
   nextLeaves[leafIndex] = newData;
-  return buildMerkleTree(nextLeaves, metadata.oddMode);
+  return buildMerkleTree(nextLeaves, metadata.oddMode, metadata.domainSeparation);
+}
+
+// =====================================================================
+// The second-preimage attack, mounted.
+// =====================================================================
+//
+// Without domain separation, leaf = SHA-256(data) and node = SHA-256(L ‖ R),
+// so the two hash spaces overlap. Take any internal node N with children L and
+// R: the 64 raw bytes L ‖ R are a valid *leaf payload* whose leaf hash is
+// SHA-256(L ‖ R) = N's hash. Present that payload with the sibling path from N
+// upward and the verifier reconstructs the genuine root — a valid inclusion
+// proof for 64 bytes that were never in the committed list.
+//
+// With the RFC 6962 prefixes the same payload hashes to SHA-256(0x00 ‖ L ‖ R),
+// which is not SHA-256(0x01 ‖ L ‖ R), and the climb lands somewhere else.
+// Nothing below is asserted: the payload is built, hashed, and run through the
+// ordinary verifyProof().
+
+export interface SecondPreimageAttack {
+  domainSeparation: boolean;
+  /** The internal node the attacker impersonates, and its two children. */
+  targetNodeHash: string;
+  leftChild: string;
+  rightChild: string;
+  /** The 64-byte forged "leaf" payload, hex-encoded: L ‖ R. */
+  forgedPayloadHex: string;
+  /** That payload hashed as a LEAF under the convention in force. */
+  forgedLeafHash: string;
+  /** Does the forged leaf hash collide with the internal node's hash? */
+  collidesWithNode: boolean;
+  /** Sibling path from the impersonated node up to the root. */
+  siblings: ProofStep[];
+  committedRoot: string;
+  recomputedRoot: string;
+  /** The verdict from verifyProof() — not from this function. */
+  accepted: boolean;
+}
+
+/**
+ * Impersonate the parent of leaves 0 and 1 with a forged 64-byte "leaf".
+ * Requires at least two leaves and a tree at least two levels deep, so that
+ * the impersonated node has a sibling path to climb.
+ */
+export async function mountSecondPreimageAttack(
+  leaves: string[],
+  domainSeparation: DomainSeparation,
+): Promise<SecondPreimageAttack> {
+  if (leaves.length < 3) {
+    throw new RangeError('The second-preimage attack needs at least three leaves.');
+  }
+
+  const tree = await buildMerkleTree(leaves, 'promote', domainSeparation);
+
+  // The honest proof for leaf 0 climbs leaf 0 → parent(0,1) → … → root. Drop
+  // its first step and what remains is exactly the path from parent(0,1) up.
+  const honest = await generateProof(tree, 0);
+  if (honest.siblings.length < 2) {
+    throw new RangeError('Tree is too shallow for the impersonated node to have a path.');
+  }
+  const rightChild = honest.siblings[0].hash;
+  const leftChild = honest.leafHash;
+  const targetNodeHash = await hashInternal(leftChild, rightChild, domainSeparation);
+  const siblings = honest.siblings.slice(1);
+
+  const forgedPayloadHex = leftChild + rightChild;
+  const forgedLeafHash = await hashLeafBytes(hexToBytes(forgedPayloadHex), domainSeparation);
+
+  const forgedProof: InclusionProof = {
+    leafIndex: -1,
+    leafHash: forgedLeafHash,
+    siblings,
+    root: tree.root.hash,
+    oddMode: 'promote',
+    usesDuplicatedSibling: false,
+    domainSeparation,
+  };
+
+  return {
+    domainSeparation,
+    targetNodeHash,
+    leftChild,
+    rightChild,
+    forgedPayloadHex,
+    forgedLeafHash,
+    collidesWithNode: forgedLeafHash === targetNodeHash,
+    siblings,
+    committedRoot: tree.root.hash,
+    recomputedRoot: await recomputeRoot(forgedProof),
+    accepted: await verifyProof(forgedProof),
+  };
 }

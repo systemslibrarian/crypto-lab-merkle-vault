@@ -3,13 +3,21 @@ import {
   buildMerkleTree,
   generateProof,
   hashInternal,
+  mountSecondPreimageAttack,
   tamperLeaf,
   verifyProof,
   type InclusionProof,
   type MerkleNode,
   type MerkleTree,
   type OddMode,
+  type SecondPreimageAttack,
 } from './merkle';
+import {
+  consistencyProof,
+  rootOf,
+  verifyConsistencyProof,
+  type ConsistencyCheck,
+} from './consistency';
 
 interface Preset {
   key: string;
@@ -30,6 +38,28 @@ interface MalleabilityResult {
   collides: boolean;
 }
 
+/** Which hashing convention the second-preimage exhibit is displaying. */
+type DsMode = 'naive' | 'rfc6962';
+
+interface SecondPreimageView {
+  items: string[];
+  naive: SecondPreimageAttack;
+  rfc6962: SecondPreimageAttack;
+}
+
+/** What the log operator did to its history between the two published roots. */
+type HistoryScenario = 'append' | 'rewrite' | 'delete' | 'reorder';
+
+interface ConsistencyView {
+  scenario: HistoryScenario;
+  oldEntries: string[];
+  newEntries: string[];
+  oldRoot: string;
+  newRoot: string;
+  proof: string[];
+  check: ConsistencyCheck;
+}
+
 interface AppState {
   activePreset: string;
   textareaValue: string;
@@ -47,6 +77,11 @@ interface AppState {
   tamperedPathHashes: Set<string>;
   proofCalculatorN: number;
   malleability: Record<OddMode, MalleabilityResult> | null;
+  dsMode: DsMode;
+  secondPreimage: SecondPreimageView | null;
+  secondPreimageError: string | null;
+  historyScenario: HistoryScenario;
+  consistency: ConsistencyView | null;
   /**
    * "Walk the proof" cursor. -1 = not walking (show the whole proof at once);
    * 0..siblings.length = the level the learner has climbed to. At value k the
@@ -124,6 +159,11 @@ const state: AppState = {
   tamperedPathHashes: new Set<string>(),
   proofCalculatorN: 1024,
   malleability: null,
+  dsMode: 'naive',
+  secondPreimage: null,
+  secondPreimageError: null,
+  historyScenario: 'append',
+  consistency: null,
   walkStep: -1,
 };
 
@@ -733,6 +773,251 @@ function renderMalleability(): string {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Second-preimage attack, mounted on the tree the learner just built.
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the attack under BOTH conventions on the same items, so the panel can
+ * show one in full and still state the other's outcome without the learner
+ * having to remember what they saw a click ago. Both results are computed;
+ * neither is written down anywhere.
+ */
+async function computeSecondPreimage(items: string[]): Promise<SecondPreimageView> {
+  return {
+    items: items.slice(),
+    naive: await mountSecondPreimageAttack(items, false),
+    rfc6962: await mountSecondPreimageAttack(items, true),
+  };
+}
+
+function renderSecondPreimage(): string {
+  const modeButton = (mode: DsMode, label: string) => `
+    <button
+      type="button"
+      class="mode-btn ${state.dsMode === mode ? 'active' : ''}"
+      data-ds-mode="${mode}"
+      role="radio"
+      aria-checked="${state.dsMode === mode ? 'true' : 'false'}"
+    >${label}</button>`;
+
+  const controls = `
+    <div class="mode-row" role="radiogroup" aria-label="Hashing convention for the attack">
+      ${modeButton('naive', 'No domain separation')}
+      ${modeButton('rfc6962', 'RFC 6962 — 0x00 / 0x01')}
+    </div>`;
+
+  if (state.secondPreimageError) {
+    return `
+      <section class="panel" id="section-preimage">
+        <h2>Section B2: The second-preimage attack, mounted</h2>
+        ${controls}
+        <p class="notice" id="sp-unavailable">${escapeHtml(state.secondPreimageError)}</p>
+      </section>`;
+  }
+
+  if (!state.secondPreimage) {
+    return '';
+  }
+
+  const view = state.secondPreimage;
+  const shown = state.dsMode === 'naive' ? view.naive : view.rfc6962;
+  const other = state.dsMode === 'naive' ? view.rfc6962 : view.naive;
+  const otherLabel = state.dsMode === 'naive' ? 'RFC 6962 prefixes' : 'no domain separation';
+
+  return `
+    <section class="panel" id="section-preimage">
+      <h2>Section B2: The second-preimage attack, mounted</h2>
+      <p>
+        Without domain separation a leaf is <span class="mono">SHA-256(data)</span> and a node is
+        <span class="mono">SHA-256(L || R)</span> — the same hash function over overlapping input
+        spaces. So the 64 raw bytes <span class="mono">L || R</span> of any internal node are
+        <em>themselves</em> a leaf payload whose leaf hash equals that node's hash. Presented with the
+        sibling path from that node upward, the ordinary verifier rebuilds the genuine root for data
+        that was never committed. The tree below is built from the ${view.items.length} items you
+        entered, and every hash is computed here.
+      </p>
+      ${controls}
+      <div class="sp-grid">
+        <p><span class="sp-lbl">Impersonated internal node</span> <span class="mono wrap" id="sp-node">${shown.targetNodeHash}</span></p>
+        <p><span class="sp-lbl">Its left child L</span> <span class="mono wrap">${shown.leftChild}</span></p>
+        <p><span class="sp-lbl">Its right child R</span> <span class="mono wrap">${shown.rightChild}</span></p>
+        <p><span class="sp-lbl">Forged 64-byte "leaf" L || R</span> <span class="mono wrap" id="sp-payload">${shown.forgedPayloadHex}</span></p>
+        <p><span class="sp-lbl">Hashed as a leaf</span> <span class="mono wrap" id="sp-leafhash">${shown.forgedLeafHash}</span></p>
+        <p><span class="sp-lbl">Collides with the node?</span> <span id="sp-collides" class="${shown.collidesWithNode ? 'proof-invalid' : 'proof-valid'}">${shown.collidesWithNode ? 'YES — leaf hash equals the internal node hash' : 'NO — the prefixes keep the two hash spaces disjoint'}</span></p>
+        <p><span class="sp-lbl">Sibling hashes supplied</span> <span class="mono">${shown.siblings.length}</span></p>
+        <p><span class="sp-lbl">Root the forged proof rebuilds</span> <span class="mono wrap" id="sp-recomputed">${shown.recomputedRoot}</span></p>
+        <p><span class="sp-lbl">Root the vault committed to</span> <span class="mono wrap" id="sp-committed">${shown.committedRoot}</span></p>
+      </div>
+      <p class="${shown.accepted ? 'proof-invalid' : 'proof-valid'}" id="sp-verdict">
+        <span aria-hidden="true">${shown.accepted ? '❌' : '✅'}</span>
+        ${shown.accepted
+          ? 'FORGERY ACCEPTED — verifyProof() returned true for 64 bytes that were never in the list. This is the vulnerability, not a simulation of it.'
+          : 'FORGERY REJECTED — verifyProof() returned false: the forged leaf hashes into a different space, so the climb lands on a different root.'}
+      </p>
+      <p class="field-hint" id="sp-cross">
+        Same items, same code, under ${otherLabel}: the forgery is
+        <strong>${other.accepted ? 'accepted' : 'rejected'}</strong>.
+        One byte of prefix is the entire difference.
+      </p>
+    </section>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Consistency (append-only) proofs — RFC 6962 §2.1.2.
+// ---------------------------------------------------------------------------
+
+const HISTORY_SCENARIOS: { key: HistoryScenario; label: string; blurb: string }[] = [
+  {
+    key: 'append',
+    label: 'Append two entries',
+    blurb: 'The honest case: the log adds entries and touches nothing it already published.',
+  },
+  {
+    key: 'rewrite',
+    label: 'Rewrite entry #1',
+    blurb: 'The log edits an entry it had already committed to, then appends as if nothing happened.',
+  },
+  {
+    key: 'delete',
+    label: 'Delete entry #2',
+    blurb: 'The log drops an old entry and appends three new ones, so the size still grows.',
+  },
+  {
+    key: 'reorder',
+    label: 'Swap entries #1 and #2',
+    blurb: 'The log keeps every entry but changes their order — the same set, a different history.',
+  },
+];
+
+/**
+ * Build the "later" log for a scenario. Every tampering case also appends, so
+ * the new log is genuinely larger than the old one and the check cannot succeed
+ * merely because the size shrank.
+ */
+function applyHistoryScenario(oldEntries: string[], scenario: HistoryScenario): string[] {
+  const appended = ['appended: entry A', 'appended: entry B'];
+  switch (scenario) {
+    case 'append':
+      return oldEntries.concat(appended);
+    case 'rewrite': {
+      const next = oldEntries.slice();
+      next[0] = `REWRITTEN: ${oldEntries[0]}`;
+      return next.concat(appended);
+    }
+    case 'delete':
+      return oldEntries
+        .filter((_, i) => i !== 1)
+        .concat(appended, ['appended: entry C']);
+    case 'reorder': {
+      const next = oldEntries.slice();
+      [next[0], next[1]] = [next[1], next[0]];
+      return next.concat(appended);
+    }
+  }
+}
+
+async function computeConsistency(
+  oldEntries: string[],
+  scenario: HistoryScenario,
+): Promise<ConsistencyView> {
+  const newEntries = applyHistoryScenario(oldEntries, scenario);
+  const oldRoot = await rootOf(oldEntries);
+  const newRoot = await rootOf(newEntries);
+  // The log operator generates the proof from the history it is publishing now.
+  // The auditor checks it against the old root they already hold.
+  const proof = await consistencyProof(newEntries, oldEntries.length);
+  const check = await verifyConsistencyProof(
+    oldEntries.length,
+    newEntries.length,
+    oldRoot,
+    newRoot,
+    proof,
+  );
+  return { scenario, oldEntries, newEntries, oldRoot, newRoot, proof, check };
+}
+
+function renderConsistency(): string {
+  const buttons = HISTORY_SCENARIOS.map(
+    (s) => `
+      <button
+        type="button"
+        class="mode-btn ${state.historyScenario === s.key ? 'active' : ''}"
+        data-history="${s.key}"
+        role="radio"
+        aria-checked="${state.historyScenario === s.key ? 'true' : 'false'}"
+      >${s.label}</button>`,
+  ).join('');
+
+  const blurb =
+    HISTORY_SCENARIOS.find((s) => s.key === state.historyScenario)?.blurb ?? '';
+
+  if (!state.consistency) {
+    return '';
+  }
+  const v = state.consistency;
+  const proofList = v.proof.length
+    ? `<ol class="cons-proof">${v.proof
+        .map((h) => `<li class="mono wrap">${h}</li>`)
+        .join('')}</ol>`
+    : '<p class="field-hint">Empty — nothing was appended, so there is nothing to prove.</p>';
+
+  // Show what the replay actually rebuilt on BOTH sides, each tagged against
+  // the root it is supposed to equal. Which side goes wrong depends on whether
+  // m is a power of two (RFC 9162 seeds the path with the auditor's own root in
+  // that case), so a panel that only reported one side would look inert half
+  // the time — and the learner would have to take the verdict on trust.
+  const rebuiltRow = (
+    label: string,
+    got: string | null,
+    expected: string,
+    id: string,
+  ): string => {
+    if (!got) return '';
+    const matches = got === expected;
+    return `<p><span class="sp-lbl">${label}</span> <span class="mono wrap" id="${id}">${got}</span>
+      <span class="${matches ? 'proof-valid' : 'proof-invalid'}" data-rebuilt-match="${matches ? 'yes' : 'no'}">${matches ? 'matches' : 'DIFFERS from what the log must reproduce'}</span></p>`;
+  };
+  const rebuilt =
+    rebuiltRow('Old root the proof rebuilds', v.check.reconstructedOldRoot, v.oldRoot, 'cons-rebuilt-old') +
+    rebuiltRow('New root the proof rebuilds', v.check.reconstructedNewRoot, v.newRoot, 'cons-rebuilt-new');
+
+  return `
+    <section class="panel" id="section-consistency">
+      <h2>Section B3: Append-only (consistency) proofs</h2>
+      <p>
+        An inclusion proof answers "is this item in the tree you published?". It says nothing about
+        whether the tree you are publishing today is the one you published last week. A
+        <strong>consistency proof</strong> (RFC 6962 §2.1.2) is the check an auditor actually runs: it
+        proves the old tree of size <em>m</em> is a prefix of the new tree of size <em>n</em> — that the
+        log only ever <em>appended</em>. Certificate Transparency is built on this, and it is the one
+        Merkle idea this page used to name and never show.
+      </p>
+      <div class="mode-row" role="radiogroup" aria-label="What the log operator did">${buttons}</div>
+      <p class="field-hint" id="cons-blurb">${escapeHtml(blurb)}</p>
+      <div class="sp-grid">
+        <p><span class="sp-lbl">Old log</span> <span class="mono" id="cons-m">${v.oldEntries.length} entries</span> <span class="mono wrap" id="cons-oldroot">${v.oldRoot}</span></p>
+        <p><span class="sp-lbl">New log</span> <span class="mono" id="cons-n">${v.newEntries.length} entries</span> <span class="mono wrap" id="cons-newroot">${v.newRoot}</span></p>
+        <p><span class="sp-lbl">Consistency proof</span> <span class="mono" id="cons-size">${v.proof.length} hashes</span></p>
+        ${proofList}
+        ${rebuilt}
+      </div>
+      <p class="${v.check.ok ? 'proof-valid' : 'proof-invalid'}" id="cons-verdict">
+        <span aria-hidden="true">${v.check.ok ? '✅' : '❌'}</span>
+        ${v.check.ok
+          ? `APPEND-ONLY CONFIRMED — the ${v.oldEntries.length} committed entries are still the first ${v.oldEntries.length} entries of the ${v.newEntries.length}-entry log.`
+          : `HISTORY TAMPERING DETECTED — ${escapeHtml(v.check.reason)}`}
+      </p>
+      <p class="field-hint">
+        The auditor holds only the old root, the new root, and ${v.proof.length}
+        ${v.proof.length === 1 ? 'hash' : 'hashes'} — never the log itself. That is what makes
+        Certificate Transparency auditable by parties who cannot download 2.8 billion certificates.
+      </p>
+    </section>
+  `;
+}
+
 function renderCalculator(): string {
   const n = Math.max(2, Math.min(1_000_000_000, state.proofCalculatorN));
   const depth = Math.ceil(Math.log2(n));
@@ -784,6 +1069,17 @@ function renderApp(): void {
           <p class="cl-hero-why-text">Merkle proofs let a client confirm one record belongs to a massive dataset by checking only a handful of hashes — the backbone of Git, Bitcoin, and Certificate Transparency. Domain separation is what keeps those proofs unforgeable.</p>
         </aside>
       </header>
+
+      <p class="scope-note" id="scope-note">
+        <strong>Where this sits:</strong> the Vault is about the <em>structure</em> — the drawn tree, one
+        climb walked level by level with the nodes lighting up as the running hash rises, and the two
+        roots asserted equal byte for byte at the top. If you want proof <em>semantics</em> instead —
+        the trust model of who supplies the root, byte-level hash preimages, RFC 9162 index-based
+        verification, and a real Certificate Transparency entry checked against Google's Argon log —
+        that is
+        <a href="https://systemslibrarian.github.io/crypto-lab-merkle-proofs/">crypto-lab-merkle-proofs</a>.
+        The two labs share a subject and deliberately answer different questions about it.
+      </p>
 
       <section class="panel" id="section-a">
         <h2>Section A: What is a Merkle Tree?</h2>
@@ -898,6 +1194,10 @@ function renderApp(): void {
           </div>
         </details>
       </section>
+
+      ${renderSecondPreimage()}
+
+      ${renderConsistency()}
 
       <section class="panel" id="section-c">
         <h2>Section C: Real-World Systems</h2>
@@ -1051,6 +1351,41 @@ function renderApp(): void {
     });
   });
 
+  document.querySelectorAll<HTMLButtonElement>('[data-ds-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = (btn.dataset.dsMode as DsMode) ?? 'naive';
+      if (mode === state.dsMode) {
+        return;
+      }
+      state.dsMode = mode;
+      // Both outcomes were already computed from the same items; switching only
+      // changes which one is on screen, so there is nothing to recompute.
+      const shown =
+        mode === 'naive' ? state.secondPreimage?.naive : state.secondPreimage?.rfc6962;
+      announce(
+        shown
+          ? `${mode === 'naive' ? 'No domain separation' : 'RFC 6962 domain separation'}. The forged proof is ${shown.accepted ? 'accepted' : 'rejected'}.`
+          : 'Hashing convention changed.',
+      );
+      renderApp();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-history]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const scenario = (btn.dataset.history as HistoryScenario) ?? 'append';
+      state.historyScenario = scenario;
+      const base = state.consistency?.oldEntries ?? state.leaves;
+      state.consistency = await computeConsistency(base, scenario);
+      announce(
+        state.consistency.check.ok
+          ? 'Consistency proof verified: the log is append-only.'
+          : `Consistency proof rejected. ${state.consistency.check.reason}`,
+      );
+      renderApp();
+    });
+  });
+
   const leafInput = document.querySelector<HTMLTextAreaElement>('#leaf-input');
   leafInput?.addEventListener('input', (event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
@@ -1069,6 +1404,7 @@ function renderApp(): void {
       return;
     }
     state.tree = await buildMerkleTree(state.leaves, state.oddMode);
+    await refreshExhibits();
     announce(`Tree built with ${state.leaves.length} leaves and root ${state.tree.root.hash.slice(0, 12)}.`);
     state.originalTree = state.tree;
     state.selectedLeafIndex = Math.min(state.selectedLeafIndex, state.leaves.length - 1);
@@ -1301,10 +1637,28 @@ async function computeMalleability(): Promise<Record<OddMode, MalleabilityResult
   return out;
 }
 
+/**
+ * Recompute the two exhibits that hang off whatever leaf list is currently
+ * committed. Both run against `state.leaves` so the attack and the audit are
+ * about the tree on screen, not a canned example beside it.
+ */
+async function refreshExhibits(): Promise<void> {
+  if (state.leaves.length >= 3) {
+    state.secondPreimage = await computeSecondPreimage(state.leaves);
+    state.secondPreimageError = null;
+  } else {
+    state.secondPreimage = null;
+    state.secondPreimageError =
+      'The impersonated node needs a sibling path to climb, so this attack needs at least three leaves. Build a larger tree above.';
+  }
+  state.consistency = await computeConsistency(state.leaves, state.historyScenario);
+}
+
 async function bootstrap(): Promise<void> {
   state.tree = await buildMerkleTree(state.leaves, state.oddMode);
   state.originalTree = state.tree;
   state.malleability = await computeMalleability();
+  await refreshExhibits();
   renderApp();
 }
 

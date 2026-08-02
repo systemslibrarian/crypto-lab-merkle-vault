@@ -6,6 +6,7 @@ import {
   tamperLeaf,
   hashLeaf,
   hashInternal,
+  mountSecondPreimageAttack,
   EMPTY_TREE_ROOT,
   type MerkleTree,
   type OddMode,
@@ -278,5 +279,74 @@ describe('fuzz: agreement with an independent recursive RFC 6962 reference', () 
         expect(await verifyProof(proof), `dup n=${n} leaf ${i}`).toBe(true);
       }
     }
+  });
+});
+
+describe('second-preimage attack on a tree without domain separation', () => {
+  const ITEMS = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+
+  it('forges an inclusion proof for 64 bytes that were never a leaf', async () => {
+    const attack = await mountSecondPreimageAttack(ITEMS, false);
+
+    // The forged payload is literally the concatenation of the node's children.
+    expect(attack.forgedPayloadHex).toBe(attack.leftChild + attack.rightChild);
+    expect(attack.forgedPayloadHex).toHaveLength(128); // 64 bytes, hex-encoded
+    // Hashed as a leaf it collides with the internal node's hash. That IS the
+    // attack, and it is checked here rather than asserted in prose.
+    expect(attack.forgedLeafHash).toBe(attack.targetNodeHash);
+    expect(attack.collidesWithNode).toBe(true);
+    // And the ordinary verifier accepts the resulting proof against the real root.
+    expect(attack.recomputedRoot).toBe(attack.committedRoot);
+    expect(attack.accepted).toBe(true);
+
+    // The forged payload is none of the committed items.
+    for (const item of ITEMS) {
+      expect(await hashLeaf(item, false)).not.toBe(attack.forgedLeafHash);
+    }
+  });
+
+  it('fails against the same items once RFC 6962 prefixes are restored', async () => {
+    const attack = await mountSecondPreimageAttack(ITEMS, true);
+    expect(attack.forgedLeafHash).not.toBe(attack.targetNodeHash);
+    expect(attack.collidesWithNode).toBe(false);
+    expect(attack.recomputedRoot).not.toBe(attack.committedRoot);
+    expect(attack.accepted).toBe(false);
+  });
+
+  it('the two conventions commit to different roots for the same items', async () => {
+    const safe = await buildMerkleTree(ITEMS, 'promote', true);
+    const naive = await buildMerkleTree(ITEMS, 'promote', false);
+    expect(safe.root.hash).not.toBe(naive.root.hash);
+    expect(safe.domainSeparation).toBe(true);
+    expect(naive.domainSeparation).toBe(false);
+  });
+
+  it('honest proofs still verify under either convention', async () => {
+    for (const ds of [true, false]) {
+      const tree = await buildMerkleTree(ITEMS, 'promote', ds);
+      for (let i = 0; i < ITEMS.length; i += 1) {
+        const proof = await generateProof(tree, i);
+        expect(proof.domainSeparation).toBe(ds);
+        expect(await verifyProof(proof), `ds=${ds} leaf ${i}`).toBe(true);
+      }
+    }
+  });
+
+  it('a proof cannot be replayed under the other convention', async () => {
+    const tree = await buildMerkleTree(ITEMS, 'promote', false);
+    const proof = await generateProof(tree, 2);
+    expect(await verifyProof(proof)).toBe(true);
+    expect(await verifyProof({ ...proof, domainSeparation: true })).toBe(false);
+  });
+
+  it('refuses to run on a tree too small to have an impersonable node', async () => {
+    await expect(mountSecondPreimageAttack(['a', 'b'], false)).rejects.toThrow(RangeError);
+  });
+
+  it('hashLeaf without prefixes is the bare SHA-256 of the data', async () => {
+    expect(await hashLeaf('x', false)).toBe(await sha256hex(utf8('x')));
+    expect(await hashLeaf('x', true)).toBe(
+      await sha256hex(concat(new Uint8Array([0x00]), utf8('x'))),
+    );
   });
 });

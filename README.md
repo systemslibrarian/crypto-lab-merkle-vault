@@ -9,13 +9,30 @@ crypto-lab-merkle-vault implements binary Merkle trees and inclusion proofs usin
 
 The live tree is **drawn** — SVG connector lines run from every parent node to its two children — and generating a proof **highlights the exact sibling consumed at each level** as the target leaf climbs to the root. A step-by-step **"walk the proof"** mode advances one level at a time, showing the running hash, the sibling being combined, and the resulting parent, with the corresponding tree nodes lighting up in sync — so O(log n) siblings become an internalized mechanism rather than a text list. When the climb reaches the top, the recomputed root and the committed root are shown **side by side and asserted equal byte-for-byte** (turning green on a match, red after a tamper) instead of a bare "VALID" line.
 
+**The second-preimage attack is mounted, not described.** A domain-separation toggle rebuilds the same items under the naive convention — `leaf = SHA-256(data)`, `node = SHA-256(L || R)`, no prefixes — and then runs the attack the prefixes exist to stop. Take the internal node above leaves 0 and 1: its 64 raw child bytes `L || R` are themselves a valid leaf payload whose leaf hash *is* that node's hash. Presented with the sibling path from that node upward, the ordinary `verifyProof()` rebuilds the genuine committed root for 64 bytes that were never in the list. The page shows the impersonated node, the forged payload, its leaf hash, the collision check, the recomputed root, and the verifier's own verdict — then the identical computation under RFC 6962, where the leaf hashes into a disjoint space and the forgery is refused. One byte of prefix is the entire difference, and both outcomes are computed on every render.
+
+**Consistency (append-only) proofs.** An inclusion proof says an item is in the tree you published; it says nothing about whether today's tree is last week's tree plus new entries. The RFC 6962 §2.1.2 consistency proof is the check a log auditor actually runs, and it now has its own panel: choose what the log operator did between the two published roots — append honestly, rewrite an old entry, delete one, or reorder two — and the RFC 9162 verification algorithm runs against the old root the auditor already holds. Every tampering case still *grows* the log, so nothing is caught merely because the size shrank. The panel prints the old and new roots, the O(log n) proof hashes, and the roots the replay actually rebuilds, each flagged against the root it is supposed to equal — so a rejection shows its own reasoning instead of asserting a verdict.
+
 **Odd-node handling is selectable, and the default is the safe one.** When a level has an odd number of nodes, the demo defaults to the RFC 6962 rule — the lone node is *promoted* (carried up unchanged), never duplicated. A "Bitcoin — duplicate" mode is also provided, which instead hashes the lone node with a copy of itself. That Bitcoin convention is the exact CVE-2012-2459 block-malleability pattern: the leaf lists `[a,b,c]` and `[a,b,c,c]` hash to the *same* root. The app computes both roots live from real SHA-256 so you can see the collision appear in Bitcoin mode and disappear in RFC 6962 mode. To keep the core build/prove/tamper loop uncluttered for a first read, the odd-node selector and this malleability demonstration live in a collapsed **"Advanced"** subsection beneath the main loop. This is why the "per RFC 6962" framing above is honest for the default construction, and the vulnerable mode is clearly labelled as such.
+
+## Where This Sits Next to crypto-lab-merkle-proofs
+
+Two labs in this catalog cover Merkle trees, and they are not interchangeable. **This one is about
+the structure**: the tree is drawn with parent→child connectors, a single proof is *walked* one level
+at a time with the corresponding nodes lighting up as the running hash rises, the recomputed and
+committed roots are asserted equal byte for byte at the top, and the odd-node convention, the
+second-preimage attack, and the append-only audit are each mounted against the tree you personally
+built. **[crypto-lab-merkle-proofs](https://systemslibrarian.github.io/crypto-lab-merkle-proofs/) is
+about proof semantics**: the trust model of who supplies the root, byte-level hash preimages for
+every step, RFC 9162 index-based verification, and a pinned real Certificate Transparency entry
+checked against Google's Argon log. Start here for *what a Merkle tree is and how one climb works*;
+go there for *what a proof does and does not entitle you to believe*.
 
 ## When to Use It
 
 - Use Merkle trees when you need to commit to a large dataset and later prove membership of individual items efficiently - blockchain transactions, certificate logs, software package manifests.
 - Use inclusion proofs when verifiers cannot download the full dataset but need cryptographic assurance that a specific item is present.
-- Use append-only Merkle logs (as in Certificate Transparency) when you need a tamper-evident audit trail where deletions are detectable.
+- Use append-only Merkle logs (as in Certificate Transparency) when you need a tamper-evident audit trail where deletions are detectable — the consistency-proof panel on the page runs exactly that check, including the rewrite, delete, and reorder cases it catches.
 - Do not use Merkle trees for exclusion proofs without additional structure - proving an item is NOT in a tree requires sorted Merkle trees or accumulators.
 - Do not omit domain separation prefixes - the second preimage attack on trees without 0x00/0x01 prefixes is a real structural vulnerability, not a theoretical concern.
 - Do NOT treat this as production code - it is a teaching demo for exploring Merkle tree structure and proofs, not a hardened transparency-log library.
@@ -28,7 +45,7 @@ Enter up to 16 items (or use the library catalog, Git commits, or transaction pr
 
 ## What Can Go Wrong
 
-- Missing domain separation: without 0x00/0x01 prefixes, an internal node hash can be presented as a leaf hash, constructing a valid-looking proof for data not in the tree (second preimage attack on tree structure).
+- Missing domain separation: without 0x00/0x01 prefixes, an internal node hash can be presented as a leaf hash, constructing a valid-looking proof for data not in the tree (second preimage attack on tree structure). **You can run this on the page** — flip the convention to "No domain separation" and the forged 64-byte payload is accepted by the real verifier; flip it back and the same payload is refused.
 - Odd-leaf duplication leaks: duplicating the last leaf to even the tree can allow an attacker to forge proofs for the duplicated position - implementations should track which positions are real vs. duplicated. This demo lets you switch into that (Bitcoin) mode and see it: `[a,b,c]` and `[a,b,c,c]` collide on one root (CVE-2012-2459), and any proof step that is a self-copy is flagged. The RFC 6962 default (promote, not duplicate) removes the leak entirely.
 - Root confusion across trees: a valid inclusion proof is only meaningful relative to a specific root. Without binding the root to a signed, timestamped commitment, an attacker can substitute a different tree with the same structure.
 - Hash function weakness: Merkle tree security reduces entirely to collision resistance of the underlying hash. SHA-1-based Merkle trees (early Git) are weakened by SHAttered - Git is migrating to SHA-256.
@@ -49,8 +66,9 @@ git clone https://github.com/systemslibrarian/crypto-lab-merkle-vault
 cd crypto-lab-merkle-vault
 npm install
 npm run dev      # dev server
-npm test         # crypto unit tests (KATs, round-trip, forgery, CVE-2012-2459, fuzz)
-npm run test:a11y  # WCAG A/AA accessibility gate (axe-core)
+npm test         # crypto unit tests (KATs, round-trip, forgery, CVE-2012-2459, second-preimage, consistency, fuzz)
+npm run build    # tsc --noEmit + vite build
+npm run test:a11y  # Playwright: WCAG A/AA gate (axe-core) + e2e/demo.spec.ts behaviour gate
 ```
 
 ## Related Demos
