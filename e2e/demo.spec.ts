@@ -169,3 +169,133 @@ test.describe('core inclusion loop still holds', () => {
     await expect(page.locator('.proof-panel')).toContainText('PROOF INVALID');
   });
 });
+
+test.describe('no verdict outlives the list it was computed from', () => {
+  test('editing the leaves retires the proof and flags every exhibit as stale', async ({
+    page,
+  }) => {
+    await gotoLab(page);
+    await page.locator('#build-tree').click();
+    await page.locator('#generate-proof').click();
+    await expect(page.locator('.proof-panel')).toContainText('Byte-for-byte identical');
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+
+    const committedBefore = (await page.locator('#sp-committed').textContent())!.trim();
+    const oldRootBefore = (await page.locator('#cons-oldroot').textContent())!.trim();
+
+    // Replace the list. Before this fix the page updated only "Leaf count":
+    // the drawn tree, the "PROOF VERIFIED" equality panel, the mounted forgery
+    // and the consistency audit all went on describing the previous list, and
+    // the forgery panel said in prose that it was built from "the items you
+    // entered".
+    await page
+      .locator('#leaf-input')
+      .fill(['alpha', 'bravo', 'charlie', 'delta', 'echo'].join('\n'));
+
+    // The proof verdict is gone, not merely restyled.
+    await expect(page.locator('.proof-panel')).not.toContainText('Byte-for-byte identical');
+    await expect(page.locator('.equality')).toHaveCount(0);
+
+    // Every region that still shows old numbers says so, and says which list
+    // those numbers belong to.
+    const banners = page.locator('.stale-notice');
+    await expect(banners).toHaveCount(3);
+    await expect(banners.first()).toContainText('leaf list has changed since the last build');
+    await expect(page.locator('#section-preimage .stale-notice')).toBeVisible();
+    await expect(page.locator('#section-consistency .stale-notice')).toBeVisible();
+    await expect(page.locator('.rebuild-flag')).toBeVisible();
+
+    // The controls that would mint a *new* verdict about the uncommitted list
+    // are disarmed until it is committed.
+    await expect(page.locator('#generate-proof')).toBeDisabled();
+    await expect(page.locator('#tamper-leaf')).toBeDisabled();
+
+    // The exhibits have not silently recomputed either; they are honestly
+    // still showing the committed tree.
+    expect((await page.locator('#sp-committed').textContent())!.trim()).toBe(committedBefore);
+    expect((await page.locator('#cons-oldroot').textContent())!.trim()).toBe(oldRootBefore);
+
+    // Committing the edit clears every flag and moves the exhibits with it.
+    await page.locator('#build-tree').click();
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+    await expect(page.locator('#generate-proof')).toBeEnabled();
+    const committedAfter = (await page.locator('#sp-committed').textContent())!.trim();
+    const oldRootAfter = (await page.locator('#cons-oldroot').textContent())!.trim();
+    expect(committedAfter).not.toBe(committedBefore);
+    expect(oldRootAfter).not.toBe(oldRootBefore);
+    expect(committedAfter).toMatch(HEX64);
+    // The attack is live against the new list, not a leftover render.
+    expect((await page.locator('#sp-leafhash').textContent())!.trim()).toBe(
+      (await page.locator('#sp-node').textContent())!.trim(),
+    );
+  });
+
+  test('switching preset flags the exhibits rather than leaving them unlabelled', async ({
+    page,
+  }) => {
+    await gotoLab(page);
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+    await page.locator('[data-preset="git"]').click();
+    await expect(page.locator('.stale-notice')).toHaveCount(3);
+    await page.locator('#build-tree').click();
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+  });
+
+  test('tampering moves the committed list with it instead of reading as drift', async ({
+    page,
+  }) => {
+    await gotoLab(page);
+    await page.locator('#build-tree').click();
+    await page.locator('#generate-proof').click();
+    const committedBefore = (await page.locator('#sp-committed').textContent())!.trim();
+
+    await page.locator('#tamper-leaf').click();
+    await expect(page.locator('.proof-panel')).toContainText('PROOF INVALID');
+
+    // The tamper is the page changing the data on purpose, so the textarea and
+    // both exhibits follow it. A stale banner here would be blaming the learner
+    // for an edit they did not make.
+    await expect(page.locator('#leaf-input')).toHaveValue(/\[TAMPERED\]/);
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+    const committedTampered = (await page.locator('#sp-committed').textContent())!.trim();
+    expect(committedTampered).not.toBe(committedBefore);
+    expect(committedTampered).toMatch(HEX64);
+
+    // Restoring puts the committed list back, and the exhibits with it.
+    await page.locator('#restore-tree').click();
+    await expect(page.locator('#leaf-input')).not.toHaveValue(/\[TAMPERED\]/);
+    await expect(page.locator('.stale-notice')).toHaveCount(0);
+    expect((await page.locator('#sp-committed').textContent())!.trim()).toBe(committedBefore);
+  });
+});
+
+/**
+ * The `[hidden]` override trap: the UA rule `[hidden] { display: none }` loses
+ * to any author rule that sets a display on the same element, so a panel that
+ * ships the attribute renders anyway and every `el.hidden = true` becomes a
+ * silent no-op. Checked in the states this page actually reaches, not just at
+ * first paint.
+ */
+test('no element carrying the hidden attribute is actually rendered', async ({ page }) => {
+  await gotoLab(page);
+
+  const leaks = async (): Promise<unknown[]> =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('[hidden]'))
+        .filter((el) => getComputedStyle(el as HTMLElement).display !== 'none')
+        .map((el) => ({
+          tag: (el as HTMLElement).tagName.toLowerCase(),
+          id: (el as HTMLElement).id,
+          cls: (el as HTMLElement).className?.toString().slice(0, 60) ?? '',
+        })),
+    );
+
+  expect(await leaks()).toEqual([]);
+  await page.locator('#build-tree').click();
+  await page.locator('#generate-proof').click();
+  await expect(page.locator('.proof-panel')).toContainText('Byte-for-byte identical');
+  expect(await leaks()).toEqual([]);
+  await page.locator('#tamper-leaf').click();
+  await expect(page.locator('.proof-panel')).toContainText('PROOF INVALID');
+  expect(await leaks()).toEqual([]);
+});

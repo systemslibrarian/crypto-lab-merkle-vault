@@ -759,6 +759,18 @@ textarea:focus-visible,
   background-color: #8a5310;
 }
 
+/* --- "The list has changed since the last build" banner ---
+   Reuses .notice-warn's tint pair, which already clears 4.5:1 in both themes,
+   rather than inventing a colour that would need its own contrast audit. */
+.stale-notice {
+  color: var(--invalid-text);
+  border: 1px solid color-mix(in oklab, var(--node-tampered), var(--surface) 55%);
+  background: color-mix(in oklab, var(--node-tampered), var(--surface) 85%);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0.6rem 0;
+}
+
 /* --- Walk-the-proof controls --- */
 .walk-controls {
   display: flex;

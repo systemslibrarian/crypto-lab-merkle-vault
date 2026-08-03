@@ -64,6 +64,14 @@ interface AppState {
   activePreset: string;
   textareaValue: string;
   leaves: string[];
+  /**
+   * The leaf list the tree, the proof and both exhibits were actually built
+   * from. `leaves` follows the textarea on every keystroke; this only moves
+   * when Build Tree commits. The two diverging is exactly the condition under
+   * which everything on screen has stopped describing what the learner is
+   * looking at.
+   */
+  builtLeaves: string[];
   oddMode: OddMode;
   tree: MerkleTree | null;
   originalTree: MerkleTree | null;
@@ -146,6 +154,7 @@ const state: AppState = {
   activePreset: presets[0].key,
   textareaValue: initialLeaves.join('\n'),
   leaves: initialLeaves.slice(),
+  builtLeaves: initialLeaves.slice(),
   oddMode: 'promote',
   tree: null,
   originalTree: null,
@@ -777,6 +786,38 @@ function renderMalleability(): string {
 // Second-preimage attack, mounted on the tree the learner just built.
 // ---------------------------------------------------------------------------
 
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((item, i) => item === b[i]);
+}
+
+/**
+ * Has the textarea drifted from the list the tree was actually built from?
+ *
+ * It used to be impossible to tell from the page. Editing the leaves updated
+ * the "Leaf count" readout and nothing else: the drawn tree, the "PROOF
+ * VERIFIED" equality panel, the mounted second-preimage forgery and the
+ * consistency audit all went on describing the previous list, while the
+ * second-preimage panel said in so many words that it was built from "the
+ * items you entered". Every one of those was a verdict about inputs that were
+ * no longer on screen.
+ */
+function leavesHaveDrifted(): boolean {
+  return !sameList(state.builtLeaves, state.leaves);
+}
+
+/**
+ * The banner that retires a stale region. Kept as one function so a new panel
+ * hanging off the leaf list cannot quietly opt out of saying so.
+ */
+function staleBanner(subject: string): string {
+  if (!leavesHaveDrifted()) return '';
+  return `<p class="notice stale-notice" role="status"><span aria-hidden="true">⟳</span>
+    <strong>The leaf list has changed since the last build.</strong>
+    ${subject} still describe the ${state.builtLeaves.length} committed
+    ${state.builtLeaves.length === 1 ? 'item' : 'items'}, not what is in the box above.
+    Press <strong>Build Tree</strong> to commit the edited list.</p>`;
+}
+
 /**
  * Run the attack under BOTH conventions on the same items, so the panel can
  * show one in full and still state the other's outcome without the learner
@@ -834,9 +875,10 @@ function renderSecondPreimage(): string {
         spaces. So the 64 raw bytes <span class="mono">L || R</span> of any internal node are
         <em>themselves</em> a leaf payload whose leaf hash equals that node's hash. Presented with the
         sibling path from that node upward, the ordinary verifier rebuilds the genuine root for data
-        that was never committed. The tree below is built from the ${view.items.length} items you
-        entered, and every hash is computed here.
+        that was never committed. The tree attacked here is the ${view.items.length}-item list this
+        page last built, and every hash below is computed from it.
       </p>
+      ${staleBanner('The forgery, its hashes and the verdict below')}
       ${controls}
       <div class="sp-grid">
         <p><span class="sp-lbl">Impersonated internal node</span> <span class="mono wrap" id="sp-node">${shown.targetNodeHash}</span></p>
@@ -994,6 +1036,7 @@ function renderConsistency(): string {
         log only ever <em>appended</em>. Certificate Transparency is built on this, and it is the one
         Merkle idea this page used to name and never show.
       </p>
+      ${staleBanner('The two logs, the proof and the audit verdict below')}
       <div class="mode-row" role="radiogroup" aria-label="What the log operator did">${buttons}</div>
       <p class="field-hint" id="cons-blurb">${escapeHtml(blurb)}</p>
       <div class="sp-grid">
@@ -1054,7 +1097,9 @@ function renderApp(): void {
 
   // The selected odd-node mode only takes effect on the NEXT build. Flag the gap
   // so a first-timer knows a mode switch needs a rebuild (a real workflow trap).
-  const rebuildNeeded = state.tree !== null && state.tree.oddMode !== state.oddMode;
+  const modeStale = state.tree !== null && state.tree.oddMode !== state.oddMode;
+  const leavesStale = leavesHaveDrifted();
+  const rebuildNeeded = modeStale || leavesStale;
 
   app!.innerHTML = `
     <main class="page" id="main" tabindex="-1">
@@ -1135,11 +1180,12 @@ function renderApp(): void {
           <p>Leaf count: <strong>${state.leaves.length}</strong></p>
           <p>Mode: <strong>${state.oddMode === 'promote' ? 'RFC 6962 — promote' : 'Bitcoin — duplicate'}</strong>${rebuildNeeded ? ' <span class="rebuild-flag">⟳ rebuild to apply</span>' : ''}</p>
         </div>
+        ${staleBanner('the tree drawn below, its inclusion proof, and both exhibits further down')}
         ${state.proofError ? `<p class="proof-invalid">${state.proofError}</p>` : ''}
         <div class="action-row">
           <button type="button" id="build-tree" class="primary">Build Tree</button>
-          <button type="button" id="generate-proof" class="secondary" ${state.tree ? '' : 'disabled'}>Generate Proof</button>
-          <button type="button" id="tamper-leaf" class="danger" ${state.tree && !state.tampered ? '' : 'disabled'}>Tamper Leaf</button>
+          <button type="button" id="generate-proof" class="secondary" ${state.tree && !leavesStale ? '' : 'disabled'}>Generate Proof</button>
+          <button type="button" id="tamper-leaf" class="danger" ${state.tree && !state.tampered && !leavesStale ? '' : 'disabled'}>Tamper Leaf</button>
           <button type="button" id="restore-tree" class="secondary" ${state.tampered ? '' : 'disabled'}>Restore Original</button>
         </div>
         <div
@@ -1316,7 +1362,6 @@ function renderApp(): void {
       state.tampered = false;
       state.originalProofCheckAgainstTampered = null;
       state.tamperedPathHashes = new Set<string>();
-    state.walkStep = -1;
       state.walkStep = -1;
       announce(`${preset.label} preset loaded with ${preset.items.length} leaves.`);
       renderApp();
@@ -1392,6 +1437,17 @@ function renderApp(): void {
     state.textareaValue = value;
     state.leaves = parseLeavesFromTextarea(value);
     state.activePreset = 'custom';
+    // A proof is a claim about one leaf of one specific list. Once the list in
+    // the box is not the list the tree was built from, that claim has nothing
+    // to stand on, so the equality panel and its verdict go rather than sit
+    // there reading "PROOF VERIFIED" beside items nobody committed.
+    if (leavesHaveDrifted()) {
+      state.proof = null;
+      state.proofSteps = [];
+      state.proofValid = null;
+      state.walkStep = -1;
+      state.originalProofCheckAgainstTampered = null;
+    }
     renderApp();
   });
 
@@ -1404,6 +1460,9 @@ function renderApp(): void {
       return;
     }
     state.tree = await buildMerkleTree(state.leaves, state.oddMode);
+    // Commit the list: from here on everything on screen is about these items,
+    // and any later edit to the textarea makes that visible.
+    state.builtLeaves = state.leaves.slice();
     await refreshExhibits();
     announce(`Tree built with ${state.leaves.length} leaves and root ${state.tree.root.hash.slice(0, 12)}.`);
     state.originalTree = state.tree;
@@ -1484,6 +1543,14 @@ function renderApp(): void {
       index === target ? `${leaf} [TAMPERED]` : leaf,
     );
     state.tampered = true;
+    // The tamper is the page changing the committed data on purpose, not the
+    // learner drifting away from it, so the textarea, the committed list and
+    // both exhibits move with it. Leaving them behind would have shown a
+    // "rebuild to apply" banner for an edit the learner never made — and left
+    // the forgery and the audit describing entries the tree no longer holds.
+    state.textareaValue = state.leaves.join('\n');
+    state.builtLeaves = state.leaves.slice();
+    await refreshExhibits();
 
     const path = findPathToLeaf(state.tree.root, target) ?? [];
     state.tamperedPathHashes = new Set(path.map((node) => node.hash));
@@ -1503,7 +1570,7 @@ function renderApp(): void {
   });
 
   const restoreButton = document.querySelector<HTMLButtonElement>('#restore-tree');
-  restoreButton?.addEventListener('click', () => {
+  restoreButton?.addEventListener('click', async () => {
     if (!state.originalTree) {
       return;
     }
@@ -1520,7 +1587,9 @@ function renderApp(): void {
 
     state.leaves = restored;
     state.textareaValue = restored.join('\n');
+    state.builtLeaves = restored.slice();
     state.tree = state.originalTree;
+    await refreshExhibits();
     state.tampered = false;
     state.proof = null;
     state.proofSteps = [];
