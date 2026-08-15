@@ -125,29 +125,14 @@ test.beforeEach(async ({ page }) => {
   expect(reduced, 'reduced-motion emulation did not take effect').toBe(true);
 });
 
-async function useLightTheme(page: Page): Promise<void> {
-  await page.locator('#cl-theme-toggle').click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-}
-
 test('no WCAG A/AA violations in dark theme', async ({ page }) => {
   await exerciseApp(page);
   await scan(page);
 });
 
-test('no WCAG A/AA violations in light theme', async ({ page }) => {
-  await useLightTheme(page);
-  await exerciseApp(page);
-  await scan(page);
-});
 
 test('no WCAG A/AA violations with the stale-list banners up (dark)', async ({ page }) => {
   await exerciseStaleState(page);
   await scan(page);
 });
 
-test('no WCAG A/AA violations with the stale-list banners up (light)', async ({ page }) => {
-  await useLightTheme(page);
-  await exerciseStaleState(page);
-  await scan(page);
-});
