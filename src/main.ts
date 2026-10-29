@@ -503,16 +503,23 @@ function renderTree(): string {
           const describe = `${caption}, hash ${node.hash}${srRole}${isTampered ? ', tampered' : ''}`;
 
           if (isSelectableLeaf) {
-            const label = `Select ${caption} for proof. ${describe}`;
+            // No aria-label, and the hash is not aria-hidden. Both together are
+            // what makes the name match: axe 4.14's label-content-name-mismatch
+            // (WCAG 2.5.3 Label in Name) compares the accessible name against
+            // everything a SIGHTED user sees, while aria-hidden content is
+            // excluded from the NAME and still counted as visible. A leaf shows
+            // its caption, a hash prefix and the book it stands for, so no
+            // hand-written label could contain all of it for long. Letting the
+            // content be the name keeps the two identical by construction;
+            // aria-pressed still says whether this leaf is the one being proved.
             return `<button
                 type="button"
                 id="${domId}"
                 class="${treeNodeClass(node, depth, hiddenMobile)} ${roleClasses}"
                 data-leaf-index="${node.leafIndex}"
-                aria-pressed="${isSelected ? 'true' : 'false'}"
-                aria-label="${escapeHtml(label)}">
+                aria-pressed="${isSelected ? 'true' : 'false'}">
               <span class="tree-caption">${caption}</span>
-              <span class="tree-hash" aria-hidden="true">${node.hash.slice(0, 8)}...</span>
+              <span class="tree-hash">${node.hash.slice(0, 8)}...</span>
               ${leafData}
               ${tamperBadge}
               ${roleBadge}
