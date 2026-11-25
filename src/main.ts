@@ -83,7 +83,7 @@ interface AppState {
   tampered: boolean;
   originalProofCheckAgainstTampered: boolean | null;
   tamperedPathHashes: Set<string>;
-  proofCalculatorN: number;
+  proofCalculatorInput: string;
   malleability: Record<OddMode, MalleabilityResult> | null;
   dsMode: DsMode;
   secondPreimage: SecondPreimageView | null;
@@ -166,7 +166,7 @@ const state: AppState = {
   tampered: false,
   originalProofCheckAgainstTampered: null,
   tamperedPathHashes: new Set<string>(),
-  proofCalculatorN: 1024,
+  proofCalculatorInput: '1024',
   malleability: null,
   dsMode: 'naive',
   secondPreimage: null,
@@ -244,14 +244,12 @@ function parseLeavesFromTextarea(raw: string): string[] {
 
 function treeLevels(root: MerkleNode): MerkleNode[][] {
   const levels: MerkleNode[][] = [[root]];
-  while (levels[levels.length - 1].some((node) => !node.isLeaf)) {
+  while (levels[levels.length - 1].some((node) => !node.isLeaf && !node.isDuplicated)) {
     const next: MerkleNode[] = [];
     for (const node of levels[levels.length - 1]) {
-      if (node.isLeaf) {
-        // A leaf on a non-final level (can happen when a promoted sibling sits
-        // beside a taller subtree): carry it straight down so columns align.
-        next.push(node);
-      } else if (node.isPromoted && node.left) {
+      // A self-copy supplies its hash. Its original descendants are already drawn.
+      if (node.isLeaf || node.isDuplicated) continue;
+      if (node.isPromoted && node.left) {
         // RFC 6962 pass-through node has a single child; descend into it.
         next.push(node.left);
       } else if (node.left && node.right) {
@@ -420,8 +418,8 @@ function renderTree(): string {
   for (let depth = 0; depth < levels.length - 1; depth += 1) {
     for (const parent of levels[depth]) {
       const pid = nodeDomIds.get(parent)!;
-      if (parent.isLeaf) {
-        continue; // carried-down leaf: no children below
+      if (parent.isLeaf || parent.isDuplicated) {
+        continue;
       }
       if (parent.isPromoted && parent.left) {
         const cid = nodeDomIds.get(parent.left);
@@ -464,7 +462,7 @@ function renderTree(): string {
                 ? node.isDuplicated
                   ? `Leaf ${node.leafIndex} (dup)`
                   : `Leaf ${node.leafIndex}`
-                : `Internal d${depth}`;
+                : `Internal d${depth}${node.isDuplicated ? ' (dup)' : ''}`;
           const leafData =
             isSelectableLeaf
               ? `<span class="tree-data">${escapeHtml(truncate(state.leaves[node.leafIndex!] ?? ''))}</span>`
@@ -621,15 +619,6 @@ function drawTreeConnectors(): void {
   shell.prepend(svg);
 }
 
-function proofSummary(): string {
-  if (!state.tree) {
-    return '';
-  }
-  const hashes = state.tree.depth;
-  const bytes = hashes * 32;
-  return `${hashes} hashes x 32 bytes = ${bytes} bytes to prove membership in ${state.tree.leafCount}-leaf tree`;
-}
-
 function renderProofPanel(): string {
   if (!state.tree) {
     return '<p class="panel-empty">Build a tree and select a leaf to generate a proof.</p>';
@@ -642,7 +631,7 @@ function renderProofPanel(): string {
   const siblings = state.proof.siblings
     .map(
       (sibling, index) => `<li${sibling.isSelfCopy ? ' class="sibling-selfcopy"' : ''}>
-        <span class="proof-index">Level ${index + 1} (${sibling.position})${sibling.isSelfCopy ? ' <span class="tree-flag">self-copy</span>' : ''}</span>
+        <span class="proof-index">Step ${index + 1} (${sibling.position})${sibling.isSelfCopy ? ' <span class="tree-flag">self-copy</span>' : ''}</span>
         <span class="mono">${sibling.hash}</span>
       </li>`,
     )
@@ -687,9 +676,9 @@ function renderProofPanel(): string {
       : `
       <div class="walk-controls" role="group" aria-label="Walk the proof one level at a time">
         <button type="button" id="walk-start" class="secondary walk-btn">${walking ? 'Restart walk' : 'Walk the proof ▸'}</button>
-        <button type="button" id="walk-next" class="primary walk-btn" ${walking && !climbComplete ? '' : 'disabled'}>Next level ▸</button>
+        <button type="button" id="walk-next" class="primary walk-btn" ${walking && !climbComplete ? '' : 'disabled'}>Next step ▸</button>
         <button type="button" id="walk-all" class="secondary walk-btn" ${walking && climbComplete ? 'disabled' : ''}>Show all at once</button>
-        <span class="walk-progress" aria-hidden="true">${walking ? `Level ${climbedCount} / ${totalSteps}` : `${totalSteps} levels`}</span>
+        <span class="walk-progress" aria-hidden="true">${walking ? `Step ${climbedCount} / ${totalSteps}` : `${totalSteps} proof ${totalSteps === 1 ? 'step' : 'steps'}`}</span>
       </div>
       ${
         walking
@@ -728,7 +717,7 @@ function renderProofPanel(): string {
           ${
             rootsMatch
               ? 'Byte-for-byte identical — the leaf is proven to be in the committed tree.'
-              : 'The two roots differ — this leaf is NOT in the committed tree (the leaf or a sibling was tampered).'
+              : 'The roots differ. This proof leaves membership unverified under the committed root.'
           }
         </p>
       </div>`
@@ -736,14 +725,14 @@ function renderProofPanel(): string {
 
   return `
     <div class="proof-block">
-      <p class="proof-gloss"><strong>Inclusion proof, in one line:</strong> prove this one item is in the set without sending the whole set — just this leaf plus one sibling hash per level (O(log n) of them).</p>
+      <p class="proof-gloss"><strong>Inclusion proof, in one line:</strong> prove this one item is in the set without sending the whole set — the verifier combines the leaf hash with one sibling per pairing. A promotion adds no hash to the proof.</p>
       <p><strong>Leaf hash:</strong></p>
       <p class="mono wrap">${state.proof.leafHash}</p>
-      <p><strong>Siblings (one per level, ${state.proof.siblings.length} total):</strong></p>
+      <p><strong>Sibling hashes supplied (${state.proof.siblings.length} total):</strong></p>
       <ol class="proof-list">${siblings}</ol>
       ${walkControls}
-      <p><strong>Root recomputation${walking ? ` (level ${climbedCount} / ${totalSteps})` : ''}:</strong></p>
-      <ol class="proof-list">${steps || '<li class="field-hint">Press “Next level” to climb the first step.</li>'}</ol>
+      <p><strong>Root recomputation${walking ? ` (step ${climbedCount} / ${totalSteps})` : ''}:</strong></p>
+      <ol class="proof-list">${steps || '<li class="field-hint">Press “Next step” to climb the first step.</li>'}</ol>
       ${equalityPanel}
       <p class="root-row">
         <strong>Committed root:</strong>
@@ -753,7 +742,7 @@ function renderProofPanel(): string {
         </button>
       </p>
       ${selfCopyWarning}
-      <p class="proof-size">${proofSummary()}</p>
+      <p class="proof-size">This proof supplies ${state.proof.siblings.length} sibling ${state.proof.siblings.length === 1 ? 'hash' : 'hashes'} (${state.proof.siblings.length * 32} bytes) for the selected leaf.</p>
     </div>
   `;
 }
@@ -1069,7 +1058,10 @@ function renderConsistency(): string {
 }
 
 function renderCalculator(): string {
-  const n = Math.max(2, Math.min(1_000_000_000, state.proofCalculatorN));
+  const n = Number(state.proofCalculatorInput);
+  if (!Number.isInteger(n) || n < 1 || n > 1_000_000_000) {
+    return '<p>Enter a whole number from 1 to 1,000,000,000 to calculate the bound.</p>';
+  }
   const depth = Math.ceil(Math.log2(n));
   const bytes = depth * 32;
   const fraction = (bytes / (n * 32)) * 100;
@@ -1077,9 +1069,9 @@ function renderCalculator(): string {
   return `
     <div class="calculator-results">
       <p>Tree depth: <strong>${depth}</strong></p>
-      <p>Proof size: <strong>${depth}</strong> hashes</p>
-      <p>Proof bytes: <strong>${bytes}</strong></p>
-      <p>Fraction downloaded: <strong>${fraction.toExponential(3)}%</strong></p>
+      <p>Maximum sibling hashes: <strong>${depth}</strong></p>
+      <p>Maximum sibling-hash bytes: <strong>${bytes}</strong></p>
+      <p>Maximum sibling-hash bytes as a share of all leaf-hash bytes: <strong>${fraction.toExponential(3)}%</strong></p>
     </div>
   `;
 }
@@ -1149,8 +1141,8 @@ function renderApp(): void {
           <article>
             <h3>A3 - Inclusion Proofs</h3>
             <p><strong>In plain terms:</strong> prove one item is in the set without sending the whole set.</p>
-            <p>A proof includes the target leaf hash and one sibling hash per level. The verifier recomputes up to root.</p>
-            <p>Proof size is <span class="mono">O(log n)</span>; for 1 million leaves, only 20 hashes are needed.</p>
+            <p>A proof includes the target leaf hash and one sibling hash per pairing. A promoted node needs no sibling. The verifier recomputes up to root.</p>
+            <p>Proof size is <span class="mono">O(log n)</span>; for 1 million leaves, at most 20 sibling hashes are needed.</p>
           </article>
         </div>
         <div class="static-tree">
@@ -1279,7 +1271,7 @@ function renderApp(): void {
           <table>
             <caption class="sr-only">Tree depth, proof size, and proof bytes as the number of leaves grows.</caption>
             <thead>
-              <tr><th scope="col">Leaves (n)</th><th scope="col">Tree depth</th><th scope="col">Proof size</th><th scope="col">Proof bytes</th></tr>
+              <tr><th scope="col">Leaves (n)</th><th scope="col">Tree depth</th><th scope="col">Sibling hashes</th><th scope="col">Sibling-hash bytes</th></tr>
             </thead>
             <tbody>
               <tr><td>8</td><td>3</td><td>3 hashes</td><td>96 bytes</td></tr>
@@ -1296,12 +1288,12 @@ function renderApp(): void {
             id="proof-n"
             type="number"
             inputmode="numeric"
-            min="2"
+            min="1"
             max="1000000000"
-            value="${state.proofCalculatorN}"
+            value="${escapeHtml(state.proofCalculatorInput)}"
             aria-describedby="proof-n-hint"
           />
-          <p id="proof-n-hint" class="field-hint">Enter 2 to 1,000,000,000 leaves.</p>
+          <p id="proof-n-hint" class="field-hint">Enter 1 to 1,000,000,000 leaves. This upper bound counts the sibling hashes alone. A particular leaf can need fewer when unpaired nodes are promoted.</p>
           <div class="calculator-output" role="status" aria-live="polite">${renderCalculator()}</div>
         </div>
         <div class="table-scroll" role="region" aria-label="Membership proof approaches compared, scrollable" tabindex="0">
@@ -1525,7 +1517,7 @@ function renderApp(): void {
       announce(
         atTop
           ? `Reached the top. Recomputed root ${combined.result.slice(0, 12)}.`
-          : `Level ${state.walkStep}: combined with the sibling to get ${combined.result.slice(0, 12)}.`,
+          : `Step ${state.walkStep}: combined with the sibling to get ${combined.result.slice(0, 12)}.`,
       );
       renderApp();
     }
@@ -1651,12 +1643,10 @@ function renderApp(): void {
   });
 
   const calculatorInput = document.querySelector<HTMLInputElement>('#proof-n');
-  calculatorInput?.addEventListener('input', (event) => {
-    const n = Number.parseInt((event.currentTarget as HTMLInputElement).value, 10);
-    if (Number.isFinite(n)) {
-      state.proofCalculatorN = n;
-    }
-    renderApp();
+  calculatorInput?.addEventListener('input', () => {
+    state.proofCalculatorInput = calculatorInput.value;
+    const output = document.querySelector('.calculator-output');
+    if (output) output.innerHTML = renderCalculator();
   });
 
   if (focusedId) {

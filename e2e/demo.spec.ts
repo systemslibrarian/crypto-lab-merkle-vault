@@ -299,3 +299,53 @@ test('no element carrying the hidden attribute is actually rendered', async ({ p
   await expect(page.locator('.proof-panel')).toContainText('PROOF INVALID');
   expect(await leaks()).toEqual([]);
 });
+
+test('proof summary counts the sibling hashes actually supplied for each leaf', async ({ page }) => {
+  await page.goto('.');
+  await page.locator('#leaf-input').fill('a\nb\nc\nd\ne');
+  await page.click('#build-tree');
+  for (const mode of ['promote', 'duplicate']) {
+    const button = page.locator('[data-odd-mode="' + mode + '"]');
+    if (mode === 'duplicate') {
+      if (!(await button.isVisible())) {
+        await page.locator('details').filter({ has: button }).locator('summary').click();
+      }
+      await button.click();
+      await expect(button).toHaveAttribute('aria-checked', 'true');
+      await page.click('#build-tree');
+    }
+    await expect(page.locator('[data-leaf-index]')).toHaveCount(5);
+    const nodeIds = await page.locator('.tree-node[id]').evaluateAll(nodes => nodes.map(n => n.id));
+    expect(new Set(nodeIds).size).toBe(nodeIds.length);
+    for (let leaf = 0; leaf < 5; leaf++) {
+      await page.locator('[data-leaf-index="' + leaf + '"]').click();
+      await page.click('#generate-proof');
+      const count = mode === 'promote' && leaf === 4 ? 1 : 3;
+      await expect(page.locator('.proof-panel .proof-list').first().locator('li')).toHaveCount(count);
+      await expect(page.locator('.proof-size')).toHaveText(
+        `This proof supplies ${count} sibling ${count === 1 ? 'hash' : 'hashes'} (${count * 32} bytes) for the selected leaf.`,
+      );
+    }
+  }
+});
+
+test('leaf-count calculator preserves edits and labels its maximum sibling bytes', async ({ page }) => {
+  await page.goto('.');
+  const input = page.locator('#proof-n');
+  const output = page.locator('.calculator-output');
+  for (const [raw, hashes] of [['1', 0], ['5', 3], ['1024', 10], ['1e6', 20], ['1000000000', 30]] as const) {
+    await input.fill(raw);
+    await expect(output.locator('p').filter({ hasText: 'Maximum sibling hashes:' }).locator('strong')).toHaveText(String(hashes));
+    await expect(output.locator('p').filter({ hasText: 'Maximum sibling-hash bytes:' }).locator('strong')).toHaveText(String(hashes * 32));
+  }
+  for (const raw of ['', '0', '-1', '2.5', '1000000001']) {
+    await input.fill(raw);
+    await expect(input).toHaveValue(raw);
+    await expect(output).toContainText('Enter a whole number');
+    await expect(output.locator('.calculator-results')).toHaveCount(0);
+  }
+  await input.fill('');
+  await input.pressSequentially('17');
+  await expect(input).toHaveValue('17');
+  await expect(output).toContainText('Maximum sibling-hash bytes: 160');
+});
